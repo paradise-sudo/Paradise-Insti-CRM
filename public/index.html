@@ -1,0 +1,1196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paradise Institutional Sales</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --ink:#15181d; --mute:#6b7280; --line:#e3e6ea;
+    --brand:#8a1538; --brand-ink:#fff; --ok:#12805c; --warn:#b45309; --bad:#b3261e;
+    --c0:#6b7280; --c1:#2563eb; --c2:#7c3aed; --c2f:#9333ea; --c3:#0891b2;
+    --c4:#12805c; --cx:#b3261e;
+    --r:10px; --sh:0 1px 2px rgba(16,24,40,.06),0 1px 3px rgba(16,24,40,.1);
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme=light]){
+      --bg:#111418; --card:#191d23; --ink:#e8eaed; --mute:#9aa3ad; --line:#2a3038;
+      --sh:0 1px 2px rgba(0,0,0,.4);
+    }
+  }
+  :root[data-theme=dark]{
+    --bg:#111418; --card:#191d23; --ink:#e8eaed; --mute:#9aa3ad; --line:#2a3038;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--ink); font:15px/1.45 system-ui,-apple-system,
+    "Segoe UI",Roboto,sans-serif; -webkit-text-size-adjust:100%;
+  }
+  button,input,select,textarea{font:inherit;color:inherit}
+  a{color:var(--c1)}
+
+  /* ---------- sign in ---------- */
+  #gate{min-height:100dvh;display:grid;place-items:center;padding:24px 16px}
+  .gatecard{width:100%;max-width:380px;background:var(--card);border:1px solid var(--line);
+    border-radius:14px;padding:26px 22px;box-shadow:var(--sh)}
+  .logo{width:42px;height:42px;border-radius:11px;background:var(--brand);color:#fff;
+    display:grid;place-items:center;font-weight:700;font-size:17px;margin-bottom:14px}
+  .gatecard h1{font-size:19px;margin:0 0 4px}
+  .gatecard p.sub{margin:0 0 18px;color:var(--mute);font-size:13.5px}
+  label{display:block;font-size:12.5px;font-weight:600;color:var(--mute);
+    margin:0 0 5px;letter-spacing:.01em}
+  .fld{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:9px;
+    background:var(--bg);margin-bottom:13px}
+  .fld:focus{outline:2px solid var(--c1);outline-offset:-1px;border-color:transparent}
+  .btn{width:100%;padding:11px 14px;border:0;border-radius:9px;background:var(--brand);
+    color:var(--brand-ink);font-weight:600;cursor:pointer}
+  .btn:disabled{opacity:.55;cursor:default}
+  .btn.ghost{background:transparent;color:var(--mute);font-weight:500}
+  .btn.sec{background:var(--card);border:1px solid var(--line);color:var(--ink)}
+  .msg{font-size:13px;margin:10px 0 0;padding:9px 11px;border-radius:8px;display:none}
+  .msg.err{display:block;background:#fdecea;color:#8c1d18}
+  .msg.ok{display:block;background:#e7f5ef;color:#0b6b4c}
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme=light]) .msg.err{background:#3a1d1a;color:#f0b3ad}
+    :root:not([data-theme=light]) .msg.ok{background:#122e24;color:#8fd9bd}
+  }
+  .otpbox{display:flex;gap:8px}
+  .otpbox .fld{text-align:center;letter-spacing:6px;font-size:20px;font-weight:600}
+  .authtabs{display:flex;gap:4px;margin:14px 0 18px;
+    border-bottom:1px solid var(--line)}
+  .authtab{flex:1;padding:9px 8px;border:0;background:none;cursor:pointer;
+    font-size:14px;font-weight:600;color:var(--mute);margin-bottom:-1px;
+    border-bottom:2px solid transparent}
+  .authtab.active{color:var(--brand);border-bottom-color:var(--brand)}
+  .pwwrap{position:relative}
+  .pwwrap .fld{padding-right:60px;width:100%}
+  .pwbtn{position:absolute;right:7px;top:16px;background:none;border:0;
+    font-size:11.5px;font-weight:700;color:var(--brand);padding:4px 6px;
+    cursor:pointer}
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme=light]) .authtab.active{color:var(--ink);
+      border-bottom-color:var(--ink)}
+    :root:not([data-theme=light]) .pwbtn{color:var(--c1)}
+  }
+
+  /* ---------- shell ---------- */
+  #app{display:none;min-height:100dvh;flex-direction:column}
+  header.top{position:sticky;top:0;z-index:40;background:var(--card);
+    border-bottom:1px solid var(--line);padding:9px 14px;
+    display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .burger{width:36px;height:36px;border:1px solid var(--line);background:transparent;
+    border-radius:9px;cursor:pointer;display:grid;place-items:center;flex:none}
+  .burger span{display:block;width:16px;height:1.8px;background:var(--ink);
+    border-radius:2px;box-shadow:0 5px 0 var(--ink),0 -5px 0 var(--ink)}
+  .vtitle{font-weight:650;font-size:16px;margin-right:auto}
+  .chip{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;
+    border:1px solid var(--line);border-radius:999px;background:var(--bg);
+    font-size:13px;cursor:pointer;white-space:nowrap}
+  .chip.on{background:var(--brand);color:#fff;border-color:transparent}
+  main{padding:16px 14px 60px;max-width:1180px;width:100%;margin:0 auto}
+
+  /* drawer */
+  #scrim{position:fixed;inset:0;background:rgba(10,12,16,.45);z-index:50;display:none}
+  #drawer{position:fixed;inset:0 auto 0 0;width:268px;max-width:84vw;z-index:51;
+    background:var(--card);border-right:1px solid var(--line);
+    transform:translateX(-100%);transition:transform .18s ease;
+    display:flex;flex-direction:column;padding:14px 0}
+  #drawer.open{transform:none}
+  .dhead{padding:4px 16px 14px;border-bottom:1px solid var(--line);margin-bottom:8px}
+  .dhead b{display:block;font-size:15px}
+  .dhead small{color:var(--mute);font-size:12.5px}
+  .nav{display:flex;flex-direction:column;gap:1px;overflow:auto}
+  .nav button{display:flex;align-items:center;gap:11px;padding:11px 16px;border:0;
+    background:transparent;text-align:left;cursor:pointer;font-size:14.5px;width:100%}
+  .nav button:hover{background:var(--bg)}
+  .nav button.on{background:var(--bg);font-weight:650;
+    box-shadow:inset 3px 0 0 var(--brand)}
+  .nav .ico{width:18px;text-align:center;flex:none;opacity:.8}
+  .nav .cnt{margin-left:auto;font-size:11.5px;font-weight:700;padding:1px 7px;
+    border-radius:999px;background:var(--bad);color:#fff}
+  .dfoot{margin-top:auto;padding:12px 16px 0;border-top:1px solid var(--line)}
+
+  /* ---------- bits ---------- */
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+    padding:14px;box-shadow:var(--sh);margin-bottom:14px}
+  .card>h2{font-size:14px;margin:0 0 12px;letter-spacing:.02em;text-transform:uppercase;
+    color:var(--mute)}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+  .row>div{flex:1 1 170px;min-width:0}
+  .row .fld{margin-bottom:0}
+  abbr[title]{text-decoration:underline dotted;text-underline-offset:3px;cursor:help}
+  .muted{color:var(--mute)}
+  .sm{font-size:13px}
+  .tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11.5px;
+    font-weight:650;color:#fff;white-space:nowrap}
+  .empty{padding:26px 14px;text-align:center;color:var(--mute);font-size:14px}
+  .list{border:1px solid var(--line);border-radius:9px;overflow:hidden}
+  .list .it{display:flex;gap:10px;align-items:center;padding:10px 12px;
+    border-bottom:1px solid var(--line);cursor:pointer;background:var(--card)}
+  .list .it:last-child{border-bottom:0}
+  .list .it:hover{background:var(--bg)}
+  .it .nm{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap}
+  .it .meta{color:var(--mute);font-size:12.5px;margin-left:auto;white-space:nowrap}
+  .req{color:var(--bad)}
+  .hint{font-size:12.5px;color:var(--mute);margin:-8px 0 12px}
+  .banner{padding:10px 12px;border-radius:9px;background:#fff8e6;color:#7a4a05;
+    font-size:13.5px;border:1px solid #f2d9a0;margin-bottom:12px}
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme=light]) .banner{background:#2c2410;color:#e9c97c;
+      border-color:#4a3b14}
+  }
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+    padding:12px 14px}
+  .stat .k{font-size:12px;color:var(--mute);letter-spacing:.02em}
+  .stat .v{font-size:22px;font-weight:700;margin-top:3px}
+  .spin{width:16px;height:16px;border:2px solid var(--line);border-top-color:var(--brand);
+    border-radius:50%;animation:sp .7s linear infinite;display:inline-block}
+  @keyframes sp{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<!-- ============================ SIGN IN ============================ -->
+<!-- Same three screens as Project Flow and the Mystery Audit dashboard:
+     log in with a password, and a code only to prove the address at signup. -->
+<div id="gate">
+  <div class="gatecard">
+    <div class="logo">P</div>
+    <h1>Institutional Sales</h1>
+
+    <div class="authtabs">
+      <button id="tabLogin" class="authtab active">Log in</button>
+      <button id="tabSignup" class="authtab">Sign up</button>
+    </div>
+
+    <!-- log in: email + password, no code -->
+    <div id="loginForm">
+      <label for="loginEmail">Work email</label>
+      <input id="loginEmail" class="fld" type="email" autocomplete="username"
+             inputmode="email" autocapitalize="off" spellcheck="false"
+             placeholder="name@paradisefoodcourt.in">
+
+      <label for="loginPassword">Password</label>
+      <div class="pwwrap">
+        <input id="loginPassword" class="fld" type="password"
+               autocomplete="current-password" placeholder="••••••••">
+        <button type="button" id="pwToggle" class="pwbtn"
+                aria-label="Show password">Show</button>
+      </div>
+
+      <button id="loginBtn" class="btn">Log in</button>
+      <button id="forgotBtn" class="btn ghost" style="margin-top:8px">
+        Forgot password?</button>
+      <p id="loginMsg" class="msg"></p>
+    </div>
+
+    <!-- sign up, step 1 of 3: the address -->
+    <div id="signupStep1" style="display:none">
+      <p class="sub">We'll email you a 6-digit code to check the address is
+        yours. Only @paradisefoodcourt.in addresses can sign up.</p>
+      <label for="signupEmail">Work email</label>
+      <input id="signupEmail" class="fld" type="email" autocomplete="username"
+             inputmode="email" autocapitalize="off" spellcheck="false"
+             placeholder="name@paradisefoodcourt.in">
+      <button id="sendOtpBtn" class="btn">Send verification code</button>
+      <p id="signupStep1Msg" class="msg"></p>
+    </div>
+
+    <!-- sign up, step 2 of 3: the code -->
+    <div id="signupStep2" style="display:none">
+      <p class="sub">Enter the 6-digit code sent to
+        <b id="signupEmailConfirm"></b>. It expires in 10 minutes.</p>
+      <div class="otpbox">
+        <input id="otpInput" class="fld" inputmode="numeric" maxlength="6"
+               autocomplete="one-time-code" placeholder="000000">
+      </div>
+      <button id="verifyOtpBtn" class="btn">Verify code</button>
+      <button id="resendOtpBtn" class="btn ghost" style="margin-top:8px">
+        Resend code</button>
+      <p id="signupStep2Msg" class="msg"></p>
+    </div>
+
+    <!-- sign up, step 3 of 3: name and password -->
+    <div id="signupStep3" style="display:none">
+      <p class="sub" id="step3Intro">Create a password for your account.</p>
+
+      <div id="nameWrap">
+        <label for="signupName">Your name <span class="req">*</span></label>
+        <input id="signupName" class="fld" autocomplete="name"
+               placeholder="How it should appear in reports">
+      </div>
+
+      <label for="newPassword">Password (min 8 characters)</label>
+      <input id="newPassword" class="fld" type="password"
+             autocomplete="new-password" placeholder="••••••••">
+
+      <label for="newPassword2">Confirm password</label>
+      <input id="newPassword2" class="fld" type="password"
+             autocomplete="new-password" placeholder="••••••••">
+
+      <button id="createAccountBtn" class="btn">Create account</button>
+      <p id="signupStep3Msg" class="msg"></p>
+    </div>
+  </div>
+</div>
+
+<!-- ============================== APP ============================== -->
+<div id="app">
+  <header class="top">
+    <button class="burger" id="burger" aria-label="Menu"><span></span></button>
+    <div class="vtitle" id="vtitle">Dashboard</div>
+    <button class="chip" id="rangeChip">MTD</button>
+    <button class="chip" id="repChip">All reps</button>
+    <button class="chip" id="whoChip"></button>
+  </header>
+  <main id="view"><div class="empty"><span class="spin"></span></div></main>
+</div>
+
+<div id="scrim"></div>
+<aside id="drawer">
+  <div class="dhead"><b id="dName">—</b><small id="dRole"></small></div>
+  <div class="nav" id="nav"></div>
+  <div class="dfoot">
+    <button class="btn sec" id="signout">Sign out</button>
+  </div>
+</aside>
+
+<script type="module">
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
+import { getAuth, signInWithCustomToken, signInWithEmailAndPassword,
+         sendPasswordResetEmail, setPersistence, browserLocalPersistence,
+         browserSessionPersistence, inMemoryPersistence,
+         onAuthStateChanged, signOut }
+  from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
+import { getFirestore, collection, getDocs, doc, getDoc, setDoc, updateDoc,
+         addDoc, query, where, serverTimestamp, writeBatch }
+  from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+import { getFunctions, httpsCallable }
+  from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js';
+
+/* ------------------------------------------------------------------ config
+   Firebase console > Project settings > General > Your apps > Web app.
+   Paste that block here. Nothing else in this file needs editing.        */
+const firebaseConfig = {
+  apiKey:            "PASTE_API_KEY",
+  authDomain:        "paradise-insti-crm.firebaseapp.com",
+  projectId:         "paradise-insti-crm",
+  storageBucket:     "paradise-insti-crm.appspot.com",
+  messagingSenderId: "PASTE_SENDER_ID",
+  appId:             "PASTE_APP_ID"
+};
+const REGION = 'asia-south1';
+
+const fb   = initializeApp(firebaseConfig);
+const auth = getAuth(fb);
+const db   = getFirestore(fb);
+const fns  = getFunctions(fb, REGION);
+const call = n => httpsCallable(fns, n);
+
+/* --------------------------------------------------------------- constants */
+const STAGES = [
+  { k:'C0',  n:'Introduction',          v:'--c0',  w:.10 },
+  { k:'C1',  n:'Follow-up',             v:'--c1',  w:.25 },
+  { k:'C2',  n:'Negotiation',           v:'--c2',  w:.45 },
+  { k:'C2F', n:'Negotiation follow-up', v:'--c2f', w:.60 },
+  { k:'C3',  n:'Confirmed',             v:'--c3',  w:.80 },
+  { k:'C4',  n:'Closed',                v:'--c4',  w:1   },
+  { k:'X',   n:'Cancelled',             v:'--cx',  w:0   }
+];
+const CLOSED = 5, CANCELLED = 6;
+
+// Hover definitions. Every abbreviation the app shows is in here.
+const DEFS = {
+  C0:'C0 — Introduction. First contact made, nothing quoted yet.',
+  C1:'C1 — Follow-up. Interest confirmed, chasing a requirement.',
+  C2:'C2 — Negotiation. Quote out, terms under discussion.',
+  C2F:'C2F — Negotiation follow-up. Quote out, waiting on their decision.',
+  C3:'C3 — Confirmed. Verbally agreed, order not yet raised.',
+  C4:'C4 — Closed. Order booked, invoice raised.',
+  X:'Cancelled. Deal lost or dropped, with a reason recorded.',
+  MTD:'Month to date — 1st of this month to today.',
+  QTD:'Quarter to date — start of this fiscal quarter to today.',
+  YTD:'Year to date — 1 April to today.',
+  FY:'Financial year, April to March. FY27 = Apr 2026 to Mar 2027.',
+  SLA:'Service level agreement — days a deal may sit in a stage before it is flagged.',
+  SSSG:'Same store sales growth — growth from clients who ordered in both periods.',
+  SPOC:'Single point of contact — the named person at the account.',
+  DCR:'Daily call report — the workbook this tool replaces.',
+  CPU:'Central production unit — an aggregator kitchen serving several sites.',
+  TY:'This year.', LY:'Last year.',
+  NA:'No next action date recorded.'
+};
+const ab = k => `<abbr title="${(DEFS[k]||k).replace(/"/g,'&quot;')}">${k}</abbr>`;
+
+const ACT_TYPES = ['Call','Visit','Email','WhatsApp','Meeting','Sampling'];
+const PAY_STATUS = ['Pending','Partial','Received','Overdue'];
+
+/* ----------------------------------------------------------------- helpers */
+const $  = s => document.querySelector(s);
+const esc = s => String(s==null?'':s)
+  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+  .replace(/"/g,'&quot;');
+const norm = s => String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+const digits = s => String(s||'').replace(/\D/g,'');
+
+function inr(n){
+  n = Number(n)||0;
+  if (Math.abs(n) >= 1e7) return '₹'+(n/1e7).toFixed(2)+' Cr';
+  if (Math.abs(n) >= 1e5) return '₹'+(n/1e5).toFixed(1)+'L';
+  return '₹'+n.toLocaleString('en-IN',{maximumFractionDigits:0});
+}
+const iso  = d => d.toISOString().slice(0,10);
+const today = () => new Date();
+function parseDate(v){
+  if (!v) return null;
+  if (typeof v === 'object' && v.toDate) return v.toDate();
+  const d = new Date(v);
+  return isNaN(d) ? null : d;
+}
+const dayspan = (a,b) => Math.round((b-a)/864e5);
+function fyOf(d){ return d.getMonth()>=3 ? d.getFullYear()+1 : d.getFullYear(); }
+
+/* Default range is month to date, computed from the clock, so on 1 Oct it
+   becomes 1-1 Oct without anyone touching it. */
+function mtd(){
+  const t = today();
+  return { from: iso(new Date(t.getFullYear(), t.getMonth(), 1)), to: iso(t),
+           label:'MTD' };
+}
+function rangePresets(){
+  const t = today(), y = t.getFullYear(), m = t.getMonth();
+  const fys = new Date(m>=3 ? y : y-1, 3, 1);
+  const q  = Math.floor(((m+9)%12)/3);            // fiscal quarter, Apr = Q1
+  const qs = new Date(fys.getFullYear(), 3+q*3, 1);
+  const lm = new Date(y, m-1, 1);
+  return [
+    mtd(),
+    { label:'Last month', from:iso(lm), to:iso(new Date(y,m,0)) },
+    { label:'QTD', from:iso(qs), to:iso(t) },
+    { label:'YTD', from:iso(fys), to:iso(t) },
+    { label:'Since Sep-23', from:'2023-09-01', to:iso(t) }
+  ];
+}
+
+/* --------------------------------------------------------------- app state */
+const S = {
+  me:null, users:[], accounts:[], opps:[], contacts:[], orders:[], targets:[],
+  byId:{}, view:'dash', range:mtd(), reps:[], loaded:false
+};
+const userName = id => (S.byId[id]||{}).name || '—';
+const anushikha = () => S.users.find(u => /anushikha/i.test(u.name||''));
+
+/* Who a person may see: themselves, plus reportees if they manage. */
+function visibleUserIds(){
+  if (!S.me) return [];
+  if (S.me.role === 'admin') return S.users.map(u=>u.id);
+  const mine = [S.me.id];
+  const walk = id => S.users.filter(u=>u.managerId===id)
+                            .forEach(u=>{ mine.push(u.id); walk(u.id); });
+  walk(S.me.id);
+  return mine;
+}
+function repFilterIds(){
+  const vis = visibleUserIds();
+  return S.reps.length ? S.reps.filter(r=>vis.includes(r)) : vis;
+}
+
+/* ================================================================= SIGN IN */
+/* Matches Project Flow and the Mystery Audit dashboard. Passwords are handled
+   by Firebase Auth; the 6-digit code only proves the address at signup. */
+
+/* LOCAL persistence needs IndexedDB, which Safari Private Browsing and other
+   private modes restrict. If it fails silently it can leave the Auth SDK
+   broken for the rest of the tab, so fall back a step at a time. Lifted from
+   the Mystery Audit dashboard, where this was a real bug. */
+setPersistence(auth, browserLocalPersistence)
+  .catch(() => setPersistence(auth, browserSessionPersistence))
+  .catch(() => setPersistence(auth, inMemoryPersistence))
+  .catch(() => {});
+
+/* Guards against an auth call that never settles — without it the button can
+   read 'Signing in…' forever with no way to tell it has failed. */
+function withTimeout(p, ms, msg) {
+  let t;
+  return Promise.race([
+    p,
+    new Promise((_, rej) => { t = setTimeout(() => rej(new Error(msg)), ms); })
+  ]).finally(() => clearTimeout(t));
+}
+
+function msg(id, text, cls) {
+  const el = $('#' + id);
+  el.textContent = text || '';
+  el.className = 'msg' + (text ? ' ' + (cls || 'err') : '');
+}
+const clearMsgs = () => ['loginMsg','signupStep1Msg','signupStep2Msg','signupStep3Msg']
+  .forEach(i => msg(i, ''));
+
+/* Never show a raw 'INTERNAL' or a Firebase error code to a rep. */
+function friendly(e, fallback) {
+  const code = (e && e.code) || '';
+  if (/wrong-password|invalid-credential|user-not-found/.test(code))
+    return 'Incorrect email or password.';
+  if (/too-many-requests/.test(code))
+    return 'Too many attempts. Wait a few minutes and try again.';
+  if (/invalid-email/.test(code)) return 'Enter a valid email address.';
+  if (/network-request-failed/.test(code))
+    return 'Could not reach the server. Check your connection.';
+  const m = (e && e.message) || '';
+  if (!m || /^internal$/i.test(m)) return fallback || 'Something went wrong. Try again.';
+  return m;
+}
+
+function busy(btn, label) {
+  if (btn.dataset.orig === undefined) btn.dataset.orig = btn.textContent;
+  btn.disabled = true; btn.textContent = label;
+  btn.style.opacity = '.6'; btn.style.cursor = 'not-allowed';
+}
+function done(btn) {
+  if (btn.dataset.orig !== undefined) btn.textContent = btn.dataset.orig;
+  btn.disabled = false; btn.style.opacity = ''; btn.style.cursor = '';
+}
+
+const PANES = ['loginForm','signupStep1','signupStep2','signupStep3'];
+function showPane(which) {
+  PANES.forEach(p => $('#' + p).style.display = p === which ? '' : 'none');
+  $('#tabLogin').classList.toggle('active', which === 'loginForm');
+  $('#tabSignup').classList.toggle('active', which !== 'loginForm');
+}
+
+$('#tabLogin').onclick  = () => { clearMsgs(); showPane('loginForm'); };
+$('#tabSignup').onclick = () => { clearMsgs(); showPane('signupStep1'); };
+
+/* ---- log in ------------------------------------------------------------- */
+$('#loginBtn').onclick = async () => {
+  clearMsgs();
+  const email = $('#loginEmail').value.trim().toLowerCase();
+  const pw = $('#loginPassword').value;
+  if (!email) return msg('loginMsg', 'Enter your email.');
+  if (!pw) return msg('loginMsg', 'Enter your password.');
+  const b = $('#loginBtn'); busy(b, 'Signing in…');
+  try {
+    await withTimeout(signInWithEmailAndPassword(auth, email, pw), 15000,
+      'Sign-in timed out — check your connection and try again.');
+    // onAuthStateChanged takes it from here.
+  } catch (e) {
+    msg('loginMsg', friendly(e, 'Sign-in failed. Try again.'));
+  } finally { done(b); }
+};
+
+$('#pwToggle').onclick = () => {
+  const i = $('#loginPassword'), showing = i.type === 'text';
+  i.type = showing ? 'password' : 'text';
+  $('#pwToggle').textContent = showing ? 'Show' : 'Hide';
+  $('#pwToggle').setAttribute('aria-label', showing ? 'Show password' : 'Hide password');
+};
+
+/* ---- forgot password: Firebase sends its own reset link ----------------- */
+$('#forgotBtn').onclick = async () => {
+  clearMsgs();
+  const email = $('#loginEmail').value.trim().toLowerCase();
+  if (!email)
+    return msg('loginMsg', 'Type your email above first, then tap Forgot password.');
+  if (!/@paradisefoodcourt\.in$/.test(email))
+    return msg('loginMsg', 'Only @paradisefoodcourt.in addresses have accounts here.');
+  const b = $('#forgotBtn'); busy(b, 'Sending…');
+  try {
+    await withTimeout(sendPasswordResetEmail(auth, email), 15000,
+      'Timed out sending the reset link. Try again.');
+    // Deliberately says nothing about whether the account exists.
+    msg('loginMsg', 'If an account exists for ' + email
+      + ', a reset link is on its way. Check your inbox, and your spam folder.', 'ok');
+  } catch (e) {
+    msg('loginMsg', friendly(e, 'Could not send the reset link.'));
+  } finally { done(b); }
+};
+
+/* ---- sign up, step 1: the address --------------------------------------- */
+let signupEmail = null, signupKnown = false;
+
+$('#sendOtpBtn').onclick = async () => {
+  clearMsgs();
+  const email = $('#signupEmail').value.trim().toLowerCase();
+  if (!/@paradisefoodcourt\.in$/.test(email))
+    return msg('signupStep1Msg', 'Only @paradisefoodcourt.in addresses can sign up.');
+  const b = $('#sendOtpBtn'); busy(b, 'Sending…');
+  try {
+    const r = await call('requestSignupOtp')({ email });
+    signupEmail = email;
+    signupKnown = !!(r.data && r.data.isKnown);
+
+    // Somebody already in the seed has a name the reports use; don't ask again.
+    $('#nameWrap').style.display = signupKnown ? 'none' : '';
+    $('#step3Intro').textContent = signupKnown
+      ? 'Set a password for your account.'
+      : 'Create a password for your account.';
+
+    $('#signupEmailConfirm').textContent = email;
+    $('#otpInput').value = '';
+    showPane('signupStep2');
+    msg('signupStep2Msg', 'Code sent — check your inbox.', 'ok');
+    $('#otpInput').focus();
+  } catch (e) {
+    msg('signupStep1Msg', friendly(e, 'Could not send the code.'));
+  } finally { done(b); }
+};
+
+/* ---- sign up, step 2: the code ------------------------------------------ */
+$('#verifyOtpBtn').onclick = async () => {
+  clearMsgs();
+  const otp = digits($('#otpInput').value);
+  if (otp.length !== 6) return msg('signupStep2Msg', 'The code is 6 digits.');
+  const b = $('#verifyOtpBtn'); busy(b, 'Verifying…');
+  try {
+    await call('verifySignupOtp')({ email: signupEmail, otp });
+    $('#newPassword').value = ''; $('#newPassword2').value = '';
+    showPane('signupStep3');
+    (signupKnown ? $('#newPassword') : $('#signupName')).focus();
+  } catch (e) {
+    msg('signupStep2Msg', friendly(e, 'That code is incorrect.'));
+  } finally { done(b); }
+};
+
+$('#resendOtpBtn').onclick = async () => {
+  clearMsgs();
+  if (!signupEmail) return;
+  const b = $('#resendOtpBtn'); busy(b, 'Resending…');
+  try {
+    await call('requestSignupOtp')({ email: signupEmail });
+    msg('signupStep2Msg', 'Sent a new code.', 'ok');
+  } catch (e) {
+    msg('signupStep2Msg', friendly(e, 'Could not resend the code.'));
+  } finally { done(b); }
+};
+
+/* ---- sign up, step 3: name and password --------------------------------- */
+$('#createAccountBtn').onclick = async () => {
+  clearMsgs();
+  const name = $('#signupName').value.trim();
+  const pw = $('#newPassword').value, pw2 = $('#newPassword2').value;
+  if (!signupKnown && !name)
+    return msg('signupStep3Msg', 'Give the name your reports should show.');
+  if (pw.length < 8)
+    return msg('signupStep3Msg', 'Password must be at least 8 characters.');
+  if (pw !== pw2) return msg('signupStep3Msg', 'Those passwords do not match.');
+  const b = $('#createAccountBtn'); busy(b, 'Creating account…');
+  try {
+    const r = await call('completeSignup')({ email: signupEmail, password: pw, name });
+    await signInWithCustomToken(auth, r.data.token);
+  } catch (e) {
+    msg('signupStep3Msg', friendly(e, 'Could not create the account.'));
+  } finally { done(b); }
+};
+
+/* Enter moves you along, the way a form should. */
+$('#loginEmail').onkeydown    = e => { if (e.key==='Enter') $('#loginPassword').focus(); };
+$('#loginPassword').onkeydown = e => { if (e.key==='Enter') $('#loginBtn').click(); };
+$('#signupEmail').onkeydown   = e => { if (e.key==='Enter') $('#sendOtpBtn').click(); };
+$('#otpInput').onkeydown      = e => { if (e.key==='Enter') $('#verifyOtpBtn').click(); };
+$('#signupName').onkeydown    = e => { if (e.key==='Enter') $('#newPassword').focus(); };
+$('#newPassword').onkeydown   = e => { if (e.key==='Enter') $('#newPassword2').focus(); };
+$('#newPassword2').onkeydown  = e => { if (e.key==='Enter') $('#createAccountBtn').click(); };
+
+$('#signout').onclick = () => signOut(auth).then(()=>location.reload());
+
+onAuthStateChanged(auth, async u => {
+  if (!u) { $('#gate').style.display=''; $('#app').style.display='none'; return; }
+  $('#gate').style.display='none'; $('#app').style.display='flex';
+  try { await boot(u); }
+  catch(e){
+    // A deactivated account fails the rules on its very first read, so name
+    // that case rather than showing a raw permission error.
+    const denied = /permission|insufficient/i.test(e.message || '');
+    $('#view').innerHTML = `<div class="card">
+      <h2>Could not load</h2>
+      <p>${denied
+        ? 'This account does not have access. If it was switched off, ask Ayush to switch it back on.'
+        : esc(e.message)}</p>
+      <button class="btn sec" id="so2" style="width:auto;padding:9px 14px">
+        Sign out</button></div>`;
+    $('#so2').onclick = () => signOut(auth).then(()=>location.reload());
+  }
+});
+
+/* ==================================================================== BOOT */
+async function grab(name){
+  const s = await getDocs(collection(db, name));
+  return s.docs.map(d => ({ id:d.id, ...d.data() }));
+}
+
+async function boot(authUser){
+  const meSnap = await getDoc(doc(db,'users',authUser.uid));
+  if (!meSnap.exists()) throw new Error('Your user record is missing. Ask Ayush.');
+  S.me = { id: authUser.uid, ...meSnap.data() };
+
+  $('#dName').textContent = S.me.name || authUser.email;
+  $('#dRole').textContent = ({admin:'Administrator', manager:'Manager', rep:'Sales'}
+                             [S.me.role] || S.me.role) + ' · ' + (S.me.email||'');
+  $('#whoChip').textContent = (S.me.name||'?').split(' ')[0];
+
+  const [users, accounts, opps, contacts] = await Promise.all(
+    ['users','accounts','opportunities','contacts'].map(grab));
+  S.users = users; S.accounts = accounts; S.opps = opps; S.contacts = contacts;
+  users.forEach(u => S.byId[u.id] = u);
+  accounts.forEach(a => S.byId[a.id] = a);
+
+  buildNav();
+  S.loaded = true;
+  go(S.view);
+
+  // Heavier collections load after the first paint.
+  grab('orders').then(o => { S.orders = o;  if (S.view==='dash') go('dash'); });
+  grab('targets').then(t => { S.targets = t; if (S.view==='dash') go('dash'); });
+}
+
+/* ==================================================================== NAV */
+const VIEWS = {
+  dash:      { t:'Dashboard',        ico:'▤', roles:['rep','manager','admin'] },
+  log:       { t:'Log activity',     ico:'✎', roles:['rep','manager','admin'] },
+  pipeline:  { t:'Pipeline',         ico:'▦', roles:['rep','manager','admin'] },
+  exception: { t:'Exceptions',       ico:'!', roles:['rep','manager','admin'] },
+  winback:   { t:'Win back',         ico:'↺', roles:['rep','manager','admin'] },
+  shared:    { t:'Shared accounts',  ico:'⇄', roles:['rep','manager','admin'] },
+  data:      { t:'Data & imports',   ico:'⇓', roles:['rep','manager','admin'] },
+  incentive: { t:'Incentive',        ico:'₹', roles:['manager','admin'] },
+  admin:     { t:'Admin',            ico:'⚙', roles:['admin'] }
+};
+
+function buildNav(){
+  const role = S.me.role;
+  $('#nav').innerHTML = Object.entries(VIEWS)
+    .filter(([,v]) => v.roles.includes(role))
+    .map(([k,v]) => `<button data-v="${k}"${k===S.view?' class="on"':''}>
+        <span class="ico">${v.ico}</span>${esc(v.t)}
+        <span class="cnt" data-cnt="${k}" style="display:none"></span></button>`)
+    .join('');
+  $('#nav').querySelectorAll('button').forEach(b =>
+    b.onclick = () => { closeDrawer(); go(b.dataset.v); });
+}
+
+function setNavCount(k, n){
+  const el = $(`[data-cnt="${k}"]`);
+  if (!el) return;
+  el.style.display = n ? '' : 'none';
+  el.textContent = n > 99 ? '99+' : n;
+}
+
+const openDrawer  = () => { $('#drawer').classList.add('open'); $('#scrim').style.display=''; };
+const closeDrawer = () => { $('#drawer').classList.remove('open'); $('#scrim').style.display='none'; };
+$('#burger').onclick = openDrawer;
+$('#scrim').onclick  = closeDrawer;
+document.addEventListener('keydown', e => { if (e.key==='Escape') closeDrawer(); });
+
+function go(v){
+  if (!VIEWS[v] || !VIEWS[v].roles.includes(S.me.role)) v = 'dash';
+  S.view = v;
+  $('#vtitle').textContent = VIEWS[v].t;
+  $('#nav').querySelectorAll('button').forEach(b =>
+    b.classList.toggle('on', b.dataset.v === v));
+  $('#repChip').style.display = (v==='log'||v==='admin') ? 'none' : '';
+  $('#rangeChip').style.display = (v==='log'||v==='admin') ? 'none' : '';
+  ({ log: viewLog }[v] || viewSoon)();
+  window.scrollTo(0,0);
+}
+
+/* ---------------------------------------------------- range and rep chips */
+$('#rangeChip').onclick = () => {
+  const p = rangePresets();
+  const body = p.map((r,i) =>
+    `<button class="chip" data-i="${i}" style="margin:0 6px 6px 0">${esc(r.label)}</button>`).join('')
+    + `<div class="row" style="margin-top:10px">
+         <div><label>From</label><input type="date" class="fld" id="rf" value="${S.range.from}"></div>
+         <div><label>To</label><input type="date" class="fld" id="rt" value="${S.range.to}"></div>
+       </div>`;
+  modal('Date range', body, m => {
+    m.querySelectorAll('[data-i]').forEach(b => b.onclick = () => {
+      S.range = p[+b.dataset.i]; closeModal(); paintChips(); go(S.view);
+    });
+    return () => {
+      const f = m.querySelector('#rf').value, t = m.querySelector('#rt').value;
+      if (!f || !t) return 'Pick both dates.';
+      if (f > t) return 'From is after To.';
+      S.range = { from:f, to:t, label:'Custom' };
+      paintChips(); go(S.view);
+    };
+  });
+};
+
+$('#repChip').onclick = () => {
+  const vis = visibleUserIds().map(id => S.byId[id]).filter(Boolean);
+  const body = `<p class="hint">Tick any number of people.</p>` + vis.map(u =>
+    `<label class="it" style="cursor:pointer;border:0">
+       <input type="checkbox" value="${u.id}"${S.reps.includes(u.id)?' checked':''}>
+       <span class="nm">${esc(u.name)}</span>
+       <span class="meta">${esc(u.role)}</span></label>`).join('');
+  modal('Filter by rep', `<div class="list">${body}</div>`, m => () => {
+    S.reps = [...m.querySelectorAll('input:checked')].map(i=>i.value);
+    paintChips(); go(S.view);
+  });
+};
+
+function paintChips(){
+  $('#rangeChip').innerHTML = S.range.label === 'Custom'
+    ? esc(S.range.from.slice(5)+' → '+S.range.to.slice(5))
+    : ab(S.range.label) ;
+  $('#repChip').textContent = !S.reps.length ? 'All reps'
+    : S.reps.length === 1 ? userName(S.reps[0])
+    : S.reps.length + ' reps';
+}
+paintChips();
+
+/* ================================================================== MODAL */
+let modalSave = null;
+function modal(title, html, wire){
+  closeModal();
+  const d = document.createElement('div');
+  d.id = 'modal';
+  d.innerHTML = `<div style="position:fixed;inset:0;background:rgba(10,12,16,.5);
+      z-index:60;display:grid;place-items:end center;padding:0">
+      <div style="background:var(--card);width:100%;max-width:520px;
+        border-radius:14px 14px 0 0;max-height:90dvh;overflow:auto;padding:16px">
+        <div style="display:flex;align-items:center;margin-bottom:12px">
+          <b style="font-size:16px">${esc(title)}</b>
+          <button id="mx" class="chip" style="margin-left:auto">Close</button>
+        </div>
+        <div id="mbody"></div>
+        <p id="merr" class="msg"></p>
+        <div style="display:flex;gap:8px;margin-top:14px">
+          <button class="btn sec" id="mcancel" style="flex:1">Cancel</button>
+          <button class="btn" id="mok" style="flex:2">Save</button>
+        </div>
+      </div></div>`;
+  document.body.appendChild(d);
+  d.querySelector('#mbody').innerHTML = html;
+  modalSave = wire ? wire(d.querySelector('#mbody')) : null;
+  if (!modalSave) d.querySelector('#mok').style.display = 'none';
+  d.querySelector('#mx').onclick = closeModal;
+  d.querySelector('#mcancel').onclick = closeModal;
+  d.querySelector('#mok').onclick = async () => {
+    const btn = d.querySelector('#mok');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const err = await modalSave();
+      if (err) { merr(err); btn.disabled=false; btn.textContent='Save'; return; }
+      closeModal();
+    } catch(e){
+      merr(e.message||'Could not save.'); btn.disabled=false; btn.textContent='Save';
+    }
+  };
+}
+function merr(t){
+  const e = document.querySelector('#merr');
+  if (e) { e.textContent = t; e.className = 'msg err'; }
+}
+function closeModal(){
+  const m = document.querySelector('#modal');
+  if (m) m.remove();
+  modalSave = null;
+}
+
+/* ============================================================ LOG ACTIVITY
+   The rep's main screen. Search an account by name OR contact number,
+   or create one, then log what happened and where the deal now sits.     */
+let logSel = null;          // { account, opp }
+
+function viewLog(){
+  $('#view').innerHTML = `
+    <div class="card">
+      <h2>1 · Pick the account</h2>
+      <div class="row">
+        <div style="flex:1 1 100%">
+          <label for="q">Search by account name or contact number</label>
+          <input id="q" class="fld" placeholder="e.g. Compass, or 98490…"
+                 autocomplete="off">
+        </div>
+      </div>
+      <p class="hint">Type at least two characters. A number search matches any
+        part of the phone number.</p>
+      <div id="qres"></div>
+      <button class="btn sec" id="newAcc" style="margin-top:12px;width:auto;
+        padding:9px 14px">＋ New account</button>
+    </div>
+    <div id="logForm"></div>`;
+
+  $('#q').oninput = () => runSearch($('#q').value);
+  $('#newAcc').onclick = newAccount;
+  $('#q').focus();
+  if (logSel) renderLogForm();
+}
+
+function runSearch(raw){
+  const t = raw.trim();
+  const box = $('#qres');
+  if (t.length < 2) { box.innerHTML = ''; return; }
+
+  const d = digits(t);
+  let hits;
+  if (d.length >= 3) {
+    const accIds = new Set(S.contacts
+      .filter(c => (c.phoneNormalised || digits(c.phone)).includes(d))
+      .map(c => c.accountId));
+    hits = S.accounts.filter(a => accIds.has(a.id));
+  } else {
+    const n = norm(t);
+    hits = S.accounts.filter(a => (a.nameNormalised || norm(a.name)).includes(n));
+  }
+
+  if (!hits.length) {
+    box.innerHTML = `<div class="empty">Nothing matched “${esc(t)}”.
+      Use ＋ New account below.</div>`;
+    return;
+  }
+  const shown = hits.slice(0, 40);
+  box.innerHTML = `<div class="list">` + shown.map(a => {
+    const o = S.opps.find(x => x.accountId === a.id);
+    const st = o ? STAGES[o.stage] : null;
+    const ph = (S.contacts.find(c => c.accountId===a.id && c.phone) || {}).phone;
+    return `<div class="it" data-a="${a.id}">
+      <span class="nm">${esc(a.name)}</span>
+      ${st ? `<span class="tag" style="background:var(${st.v})">${st.k}</span>` : ''}
+      <span class="meta">${esc(ph || 'no number')} · ${esc(userName(a.owner))}</span>
+    </div>`;
+  }).join('') + `</div>` +
+    (hits.length > shown.length
+      ? `<p class="hint" style="margin-top:8px">Showing 40 of ${hits.length}.
+         Keep typing to narrow it.</p>` : '');
+
+  box.querySelectorAll('[data-a]').forEach(el =>
+    el.onclick = () => pick(el.dataset.a));
+}
+
+function pick(accId){
+  const account = S.byId[accId];
+  const opp = S.opps.find(o => o.accountId === accId) || null;
+  logSel = { account, opp };
+  renderLogForm();
+}
+
+function renderLogForm(){
+  const { account, opp } = logSel;
+  const stage = opp ? opp.stage : 0;
+  const ph = (S.contacts.find(c => c.accountId===account.id && c.phone) || {});
+  const owner = userName(account.owner);
+
+  $('#logForm').innerHTML = `
+    <div class="card" id="formCard">
+      <h2>2 · ${esc(account.name)}</h2>
+      <p class="sm muted" style="margin:-6px 0 12px">
+        Owner ${esc(owner)} ·
+        ${account.clientClass === 'old' ? 'Old client' : 'New client'} ·
+        ${ph.phone
+            ? ab('SPOC') + ' ' + esc(ph.name||'') + ' ' + esc(ph.phone)
+            : '<span class="req">no contact number on file</span>'}
+      </p>
+
+      ${!ph.phone ? `<div class="row" style="margin-bottom:12px">
+        <div><label>Contact name</label>
+          <input id="cname" class="fld" placeholder="Who you spoke to"></div>
+        <div><label>Contact number</label>
+          <input id="cphone" class="fld" inputmode="tel" placeholder="10 digits"></div>
+      </div>` : ''}
+
+      <div class="row" style="margin-bottom:12px">
+        <div><label for="atype">What happened <span class="req">*</span></label>
+          <select id="atype" class="fld">
+            ${ACT_TYPES.map(t=>`<option>${t}</option>`).join('')}
+          </select></div>
+        <div><label for="adate">When</label>
+          <input id="adate" type="date" class="fld" value="${iso(today())}"></div>
+      </div>
+
+      <label for="remarks">Remarks <span class="req">*</span></label>
+      <textarea id="remarks" class="fld" rows="3"
+        placeholder="What was discussed, what they asked for"></textarea>
+
+      <label for="stage">Stage now</label>
+      <select id="stage" class="fld">
+        ${STAGES.map((s,i)=>`<option value="${i}"${i===stage?' selected':''}>
+           ${s.k} · ${s.n}</option>`).join('')}
+      </select>
+      <p class="hint" id="stageHint"></p>
+
+      <div id="stageExtra"></div>
+
+      <div class="row" style="margin-top:4px">
+        <div><label for="nad">Next action date</label>
+          <input id="nad" type="date" class="fld"
+            value="${opp && opp.nextActionDate ? iso(parseDate(opp.nextActionDate)) : ''}"></div>
+        <div><label for="nat">Next action</label>
+          <select id="nat" class="fld"><option value="">—</option>
+            ${ACT_TYPES.map(t=>`<option>${t}</option>`).join('')}</select></div>
+      </div>
+
+      <p id="lmsg" class="msg"></p>
+      <button class="btn" id="save" style="margin-top:12px">Save activity</button>
+      <button class="btn ghost" id="cancelLog" style="margin-top:8px">Cancel</button>
+    </div>`;
+
+  $('#stage').onchange = stageExtra;
+  stageExtra();
+  $('#save').onclick = saveLog;
+  $('#cancelLog').onclick = () => { logSel=null; $('#logForm').innerHTML=''; };
+
+  // Open where the work is, not at the top of the page.
+  $('#formCard').scrollIntoView({ behavior:'smooth', block:'start' });
+}
+
+/* Stage-dependent mandatory fields. Enforced again in rules and Functions. */
+function stageExtra(){
+  const s = +$('#stage').value;
+  const box = $('#stageExtra');
+  const hint = $('#stageHint');
+  const { opp, account } = logSel;
+  hint.innerHTML = STAGES[s] ? esc(STAGES[s].n) + ' — ' + ab(STAGES[s].k) : '';
+
+  let h = '';
+
+  // C1 and C2 route to Anushikha unless someone types a reason.
+  if ((s===1 || s===2) && (!opp || opp.stage !== s)) {
+    const an = anushikha();
+    h += `<div class="banner">Deals moving to ${ab(STAGES[s].k)} go to
+      <b>${esc(an ? an.name : 'Anushikha')}</b> for follow-up. To hand it to
+      someone else, pick them and say why.</div>
+      <div class="row" style="margin-bottom:12px">
+        <div><label for="asgn">Assign to</label>
+          <select id="asgn" class="fld">
+            ${S.users.filter(u=>u.active!==false).map(u =>
+              `<option value="${u.id}"${an&&u.id===an.id?' selected':''}>
+                 ${esc(u.name)}</option>`).join('')}
+          </select></div>
+      </div>
+      <div id="asgnWhyWrap" style="display:none">
+        <label for="asgnWhy">Why not ${esc(an?an.name:'Anushikha')}?
+          <span class="req">*</span></label>
+        <input id="asgnWhy" class="fld" placeholder="Reason, in your words">
+      </div>`;
+  }
+
+  if (s === CLOSED) {
+    h += `<div class="row" style="margin-bottom:12px">
+        <div><label for="ov">Order value <span class="req">*</span></label>
+          <input id="ov" class="fld" inputmode="numeric"
+            value="${opp && opp.expectedValue ? Math.round(opp.expectedValue) : ''}"></div>
+        <div><label for="ostore">Store / site</label>
+          <input id="ostore" class="fld" placeholder="Where it is served"></div>
+      </div>
+      <div class="row" style="margin-bottom:12px">
+        <div><label for="inv">Invoice number <span class="req">*</span></label>
+          <input id="inv" class="fld" placeholder="Mandatory on close"></div>
+        <div><label for="pay">Payment status <span class="req">*</span></label>
+          <select id="pay" class="fld">
+            <option value="">Pick one</option>
+            ${PAY_STATUS.map(p=>`<option>${p}</option>`).join('')}</select></div>
+      </div>
+      <p class="hint">Invoice number and payment status are required — the
+        database rejects a closed order without them. Payment status starts
+        blank on purpose, so it is a choice rather than a default.</p>`;
+  }
+
+  if (s === CANCELLED) {
+    h += `<label for="loss">Why was it lost? <span class="req">*</span></label>
+      <select id="loss" class="fld">
+        <option value="">Pick one</option>
+        ${['Price / budget','Went to competitor','Requirement dropped',
+           'No response','Quality concern','Distance / logistics',
+           'Menu not suitable','Other'].map(r=>`<option>${r}</option>`).join('')}
+      </select>`;
+  }
+  box.innerHTML = h;
+
+  const sel = $('#asgn'), an = anushikha();
+  if (sel) sel.onchange = () => {
+    $('#asgnWhyWrap').style.display = (an && sel.value===an.id) ? 'none' : '';
+  };
+}
+
+function lmsg(t, cls){
+  const e = $('#lmsg');
+  e.textContent = t || ''; e.className = 'msg' + (t?' '+cls:'');
+}
+
+async function saveLog(){
+  const { account } = logSel;
+  let { opp } = logSel;
+  const s = +$('#stage').value;
+  const btn = $('#save');
+  const val = id => { const e=$('#'+id); return e ? e.value.trim() : ''; };
+
+  const remarks = val('remarks');
+  if (!remarks) return lmsg('Say what happened — remarks are required.','err');
+
+  const assignTo = val('asgn');
+  const why = val('asgnWhy');
+  const an = anushikha();
+  if (assignTo && an && assignTo !== an.id && !why)
+    return lmsg('Give a reason for assigning away from '+an.name+'.','err');
+
+  if (s === CLOSED) {
+    if (!Number(digits(val('ov')))) return lmsg('Order value is required to close.','err');
+    if (!val('inv')) return lmsg('Invoice number is required to close.','err');
+    if (!val('pay')) return lmsg('Payment status is required to close.','err');
+  }
+  if (s === CANCELLED && !val('loss'))
+    return lmsg('Pick a loss reason before cancelling.','err');
+  if (s < CLOSED && !val('nad'))
+    return lmsg('An open deal needs a next action date.','err');
+
+  btn.disabled = true; btn.textContent = 'Saving…'; lmsg('');
+  try {
+    const when = val('adate') ? new Date(val('adate')) : today();
+    const batch = writeBatch(db);
+
+    // contact, if the rep filled one in
+    if (val('cphone')) {
+      const ph = digits(val('cphone'));
+      batch.set(doc(collection(db,'contacts')), {
+        accountId: account.id, name: val('cname') || 'Contact',
+        phone: ph, phoneNormalised: ph, email:'', designation:'',
+        isPrimary: true, createdAt: serverTimestamp(), createdBy: S.me.id
+      });
+    }
+
+    // opportunity
+    const oppData = {
+      accountId: account.id, name: account.name, stage: s,
+      stageSince: when.toISOString(),
+      nextActionDate: s < CLOSED ? new Date(val('nad')).toISOString() : null,
+      nextActionType: val('nat') || '',
+      lossReason: s === CANCELLED ? val('loss') : null,
+      closedAt: s >= CLOSED ? when.toISOString() : null
+    };
+    if (assignTo) {
+      oppData.owner = assignTo;
+      if (why) oppData.assignReason = why;
+    }
+    let oppId;
+    if (opp) {
+      oppId = opp.id;
+      batch.update(doc(db,'opportunities',opp.id), oppData);
+    } else {
+      const ref = doc(collection(db,'opportunities'));
+      oppId = ref.id;
+      batch.set(ref, { ...oppData, owner: oppData.owner || S.me.id,
+        expectedValue: 0, quotedValue: 0, confirmedValue: 0,
+        expectedOrderDate: null, temperature:'', source:'app',
+        createdAt: serverTimestamp() });
+    }
+
+    // activity
+    batch.set(doc(collection(db,'activities')), {
+      accountId: account.id, opportunityId: oppId, type: val('atype'),
+      remarks, checkIn: null, loggedBy: S.me.id,
+      loggedAt: when.toISOString()
+    });
+
+    // order, only on close
+    if (s === CLOSED) {
+      batch.set(doc(collection(db,'orders')), {
+        accountId: account.id, opportunityId: oppId, bookedBy: S.me.id,
+        value: Number(digits(val('ov'))), orderDate: when.toISOString(),
+        store: val('ostore') || '', channel:'app',
+        invoiceNumber: val('inv'), paymentStatus: val('pay'),
+        paymentReceivedAt: null, financeApprovedAt: null,
+        aggregator: null, commissionPct: 0
+      });
+    }
+
+    await batch.commit();
+
+    // keep the local copy in step so the screen is honest without a reload
+    if (opp) Object.assign(opp, oppData);
+    else S.opps.push({ id: oppId, accountId: account.id, stage: s, ...oppData });
+
+    logSel = null;
+    $('#logForm').innerHTML = `<div class="card"><h2>Saved</h2>
+      <p>${esc(account.name)} logged at ${ab(STAGES[s].k)}.</p>
+      <button class="btn sec" id="again" style="width:auto;padding:9px 14px">
+        Log another</button></div>`;
+    $('#again').onclick = viewLog;
+    $('#q').value = ''; $('#qres').innerHTML = '';
+  } catch(e){
+    lmsg(e.message || 'Could not save.','err');
+    btn.disabled = false; btn.textContent = 'Save activity';
+  }
+}
+
+/* --------------------------------------------------------- new account */
+function newAccount(){
+  const vis = S.users.filter(u => u.active !== false);
+  modal('New account', `
+    <label for="na">Account name <span class="req">*</span></label>
+    <input id="na" class="fld" placeholder="As it should appear in reports">
+    <div class="row" style="margin-bottom:12px">
+      <div><label for="nr">Region</label>
+        <select id="nr" class="fld">
+          ${['Hyderabad','Secunderabad','Gurgaon','Vijayawada','Vizag','Other']
+            .map(r=>`<option>${r}</option>`).join('')}</select></div>
+      <div><label for="nt">Type</label>
+        <select id="nt" class="fld">
+          ${['Corporate','Aggregator','Hospital','College','School','Church',
+             'Event','Travel Group','Other'].map(r=>`<option>${r}</option>`).join('')}
+        </select></div>
+    </div>
+    <div class="row" style="margin-bottom:12px">
+      <div><label for="ncn">Contact name</label>
+        <input id="ncn" class="fld"></div>
+      <div><label for="ncp">Contact number</label>
+        <input id="ncp" class="fld" inputmode="tel"></div>
+    </div>
+    <label for="no">Owner</label>
+    <select id="no" class="fld">
+      ${vis.map(u=>`<option value="${u.id}"${u.id===S.me.id?' selected':''}>
+        ${esc(u.name)}</option>`).join('')}
+    </select>`, m => async () => {
+      const name = m.querySelector('#na').value.trim();
+      if (!name) return 'Give the account a name.';
+      const nn = norm(name);
+      const dup = S.accounts.find(a => (a.nameNormalised||norm(a.name)) === nn);
+      if (dup) return 'That already exists as “' + dup.name + '”. Search for it instead.';
+
+      const ref = doc(collection(db,'accounts'));
+      const acc = {
+        name, nameNormalised: nn,
+        owner: m.querySelector('#no').value,
+        team: [m.querySelector('#no').value],
+        region: m.querySelector('#nr').value,
+        type: m.querySelector('#nt').value,
+        industry:'', parentAccountId:null, isSite:false,
+        firstOrderDate:null, lifetimeValue:0, orderCountByFY:{},
+        clientClass:'new', classEffectiveFrom:null,
+        createdAt: serverTimestamp(), createdBy: S.me.id,
+        updatedAt: serverTimestamp(), updatedBy: S.me.id
+      };
+      await setDoc(ref, acc);
+
+      const ph = digits(m.querySelector('#ncp').value);
+      if (ph) {
+        const c = { accountId: ref.id, name: m.querySelector('#ncn').value.trim()
+          || 'Contact', phone: ph, phoneNormalised: ph, email:'', designation:'',
+          isPrimary:true, createdAt: serverTimestamp(), createdBy: S.me.id };
+        const cref = doc(collection(db,'contacts'));
+        await setDoc(cref, c);
+        S.contacts.push({ id:cref.id, ...c });
+      }
+      const local = { id: ref.id, ...acc };
+      S.accounts.push(local); S.byId[ref.id] = local;
+      pick(ref.id);
+    });
+}
+
+/* ------------------------------------------------------- not built yet */
+function viewSoon(){
+  $('#view').innerHTML = `<div class="card">
+    <h2>${esc(VIEWS[S.view].t)}</h2>
+    <p class="muted">Next drop. The data behind it is already loaded and
+      reconciled — this screen is what is left to draw.</p>
+    <p class="sm muted">Build order: sign-in → logging → dashboard →
+      exceptions and win-back → incentive.</p>
+  </div>`;
+}
+</script>
+</body>
+</html>
