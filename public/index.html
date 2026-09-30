@@ -489,11 +489,7 @@ const anushikha = () => S.users.find(u => /anushikha/i.test(u.name||''));
 function visibleUserIds(){
   if (!S.me) return [];
   if (S.me.role === 'admin') return S.users.map(u=>u.id);
-  const mine = [S.me.id];
-  const walk = id => S.users.filter(u=>u.managerId===id)
-                            .forEach(u=>{ mine.push(u.id); walk(u.id); });
-  walk(S.me.id);
-  return mine;
+  return teamOf(S.me.id);
 }
 function repFilterIds(){
   const vis = visibleUserIds();
@@ -1856,6 +1852,126 @@ const monthLabel = mk => {
     + '-' + String(y).slice(2);
 };
 
+/* ---- reporting tree ------------------------------------------------------
+   A manager's numbers are their own plus everyone under them, at any depth.
+   That roll-up is what makes "reports to" a target decision and not just an
+   org chart: park a rep under someone and their target lands in that
+   person's headline figure.                                                */
+
+/* Cycle-safe on purpose. Two people set to report to each other would send
+   the old plain recursion into a stack overflow and take the whole app down
+   on the next render, which is a high price for a mis-click. */
+function teamOf(id){
+  const out = [id], seen = new Set([id]);
+  const walk = p => S.users.filter(u => u.managerId === p).forEach(u => {
+    if (seen.has(u.id)) return;
+    seen.add(u.id); out.push(u.id); walk(u.id);
+  });
+  walk(id);
+  return out;
+}
+
+/* Would setting `mgr` as uid's manager close a loop? Walk up from mgr; if we
+   arrive back at uid, it would. */
+function wouldCycle(uid, mgr){
+  let at = mgr, hops = 0;
+  while (at && hops++ < 50) {
+    if (at === uid) return true;
+    const u = S.users.find(x => x.id === at);
+    at = u ? u.managerId : null;
+  }
+  return false;
+}
+
+const FY_FROM = '2026-04-01', FY_TO = '2027-03-31';
+
+function adminTree(){
+  const me = S.me.id;
+  const users = S.users.slice().sort((a,b) =>
+    (a.role === 'admin' ? 1 : 0) - (b.role === 'admin' ? 1 : 0)
+    || String(a.name).localeCompare(String(b.name)));
+
+  const row = u => {
+    const team = teamOf(u.id);
+    const reportees = team.filter(x => x !== u.id);
+    const own  = targetForRange(FY_FROM, FY_TO, [u.id]);
+    const roll = targetForRange(FY_FROM, FY_TO, team);
+    const others = users.filter(x => x.id !== u.id && !wouldCycle(u.id, x.id));
+    return { c: [
+      `<div style="font-weight:600">${esc(u.name)}</div>
+       <div class="sm muted">${esc(u.email || '')}</div>`,
+      `<select class="fld" data-mgr="${u.id}" style="margin:0;min-width:140px;
+         text-align:left">
+         <option value="">— nobody (top level) —</option>
+         ${others.map(x => `<option value="${x.id}"${
+           u.managerId === x.id ? ' selected' : ''}>${esc(x.name)}</option>`).join('')}
+       </select>`,
+      reportees.length
+        ? `<span class="sm">${esc(reportees.map(userName).join(', '))}</span>`
+        : '<span class="muted">—</span>',
+      `<select class="fld" data-role="${u.id}" style="margin:0;min-width:110px"${
+         u.id === me ? ' disabled title="You cannot change your own role"' : ''}>
+         ${['rep','manager','admin'].map(r => `<option value="${r}"${
+           u.role === r ? ' selected' : ''}>${r}</option>`).join('')}
+       </select>`,
+      own ? inr(own) : '—',
+      roll > own ? `<b>${inr(roll)}</b>
+        <span class="sm muted">(${team.length})</span>` : (own ? inr(own) : '—')
+    ] };
+  };
+
+  return `
+    <div class="card">
+      <h2>Who reports to whom</h2>
+      <p class="sm muted" style="margin:-4px 0 12px">A manager's dashboard shows
+        their own numbers <b>plus everyone under them</b>, at any depth. So this
+        is a target decision, not just an org chart — move a rep here and
+        their target moves into that manager's headline figure.</p>
+      ${dtable(['Person','Reports to','Reportees','Role','Own FY27','Rolled up'],
+               users.map(row))}
+      <p id="treeMsg" class="msg"></p>
+      <p class="hint" style="margin-top:10px">Saved as soon as you change one.
+        A loop is refused — two people reporting to each other would take
+        the app down. Own FY27 is that person's own targets for Apr-26 to
+        Mar-27; Rolled up adds their team's.</p>
+    </div>`;
+}
+
+function wireTree(){
+  const save = async (uid, patch, what) => {
+    try {
+      await updateDoc(doc(db, 'users', uid), { ...patch, updatedBy: S.me.id });
+      const u = S.users.find(x => x.id === uid);
+      if (u) Object.assign(u, patch);
+      if (S.byId[uid]) Object.assign(S.byId[uid], patch);
+      msg('treeMsg', what, 'ok');
+      viewAdmin();
+      setTimeout(() => msg('treeMsg', what, 'ok'), 0);
+    } catch (e) {
+      msg('treeMsg', friendly(e, 'Could not save that.'));
+    }
+  };
+
+  $('#view').querySelectorAll('[data-mgr]').forEach(sel => sel.onchange = () => {
+    const uid = sel.dataset.mgr, mgr = sel.value || null;
+    if (mgr && wouldCycle(uid, mgr)) {
+      msg('treeMsg', userName(mgr) + ' already reports up through '
+        + userName(uid) + ', so that would be a loop.');
+      viewAdmin();
+      return;
+    }
+    save(uid, { managerId: mgr },
+      userName(uid) + (mgr ? ' now reports to ' + userName(mgr)
+                           : ' no longer reports to anyone')
+      + '. Their target rolls up accordingly.');
+  });
+
+  $('#view').querySelectorAll('[data-role]').forEach(sel => sel.onchange = () => {
+    const uid = sel.dataset.role;
+    save(uid, { role: sel.value }, userName(uid) + ' is now a ' + sel.value + '.');
+  });
+}
+
 function viewAdmin() {
   const reps = S.users.filter(u => u.active !== false && u.role !== 'admin');
   const sel = S.adminRep || (reps[0] && reps[0].id);
@@ -1986,6 +2102,9 @@ function viewAdmin() {
   $('#arep').onchange = draw;
   $('#afy').onchange = draw;
   draw();
+
+  $('#view').insertAdjacentHTML('beforeend', adminTree());
+  wireTree();
 }
 
 /* ======================================================== SHARED LIST BITS
