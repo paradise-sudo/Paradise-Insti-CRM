@@ -416,6 +416,12 @@ for key, rs in by_account.items():
                 accountId=aid, opportunityId=oid,
                 bookedBy=uid(x['rep']) if x['rep'] else None,
                 value=round(x['actual'], 2), orderDate=od.isoformat(),
+                # Expected Business is a PER-ROW column in the DCR, so it
+                # belongs here and not on the opportunity. The opportunity
+                # keeps only the latest row's figure, which meant an account
+                # ordering eight times in a month had its month of billings
+                # compared against one row's forecast.
+                expectedValue=round(x['expected'], 2),
                 store=x['store'], channel='',
                 invoiceNumber=x['invoiceNo'],
                 paymentStatus=x['hoStatus'] or 'Pending',

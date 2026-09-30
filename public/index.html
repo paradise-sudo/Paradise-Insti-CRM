@@ -1587,16 +1587,16 @@ function viewDash() {
   const ach = tgt ? net / tgt : 0;
   const accountsBilled = new Set(ord.map(o => o.accountId)).size;
 
-  /* The DCR carried Expected Business and Actual Closed Business side by side.
-     Orders here hold only the actual, so the expectation is read back off the
-     opportunity each order came from: what these deals were forecast to bring
-     against what they actually billed. */
-  const oppById = {};
-  S.opps.forEach(o => oppById[o.id] = o);
-  const expected = ord.reduce((n, o) => {
-    const op = oppById[o.opportunityId];
-    return n + (op ? (op.expectedValue || 0) : 0);
-  }, 0);
+  /* Expected Business is a PER-ROW figure in the DCR, so it belongs on the
+     order, not on the deal. Reading it off the opportunity counted one deal's
+     forecast once per order - a popup counter with eight orders in September
+     contributed its expected value eight times, and the tile read 121%
+     realisation against a real figure nowhere near that.
+
+     build_seed.py now carries the row's expected onto each order. Until the
+     seed is reloaded, orders have no expectedValue and the tile is left off
+     the screen rather than showing a number that is not true. */
+  const expected = ord.reduce((n, o) => n + (o.expectedValue || 0), 0);
 
   const hoRev  = ord.filter(o => /\bHO\b/i.test(o.paymentStatus || ''))
                     .reduce((n, o) => n + (o.value || 0), 0);
@@ -1744,8 +1744,8 @@ function viewDash() {
     </div>
 
     <div class="grid2" style="margin-bottom:14px">
-      ${tile('Expected business', inr(expected),
-             expected ? (net/expected*100).toFixed(0) + '% realised' : 'no forecast on these deals')}
+      ${expected ? tile('Expected business', inr(expected),
+             (net/expected*100).toFixed(0) + '% realised') : ''}
       ${tile('Committed at ' + ab('C3'), inr(committed),
              open.filter(o => o.stage === 4).length + ' waiting on the order')}
       ${tile('Accounts touched', S.acts ? String(touched) : '—',
