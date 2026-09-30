@@ -1,1 +1,175 @@
+rules_version = '2';
 
+// Paradise Institutional Sales CRM
+//
+// Principle: permissions are enforced here and in Cloud Functions, never by
+// hiding a button. Anyone on the team may LOG activity and orders on any
+// account (Ayush's decision), but ownership, targets, splits and the
+// reporting tree are restricted.
+
+service cloud.firestore {
+  function signedIn() {
+    return request.auth != null;
+  }
+
+  function me() {
+    return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+  }
+
+  function role() {
+    return signedIn() ? me().role : 'none';
+  }
+
+  function isAdmin() {
+    return role() == 'admin';
+  }
+
+  // Anyone on the Paradise domain may create their own account (Ayush's
+  // decision, 30-Sep-26), so deactivation is the only lever left afterwards.
+  // It has to bite HERE, not only at sign-in: a token already minted stays
+  // valid for the best part of an hour, and without this check a deactivated
+  // person keeps reading and writing until it expires.
+  function active() {
+    return signedIn() && me().active != false;
+  }
+
+  function isStaff() {
+    return active() && role() in ['admin', 'manager', 'rep'];
+  }
+
+  // A manager sees their own reportees, at any depth up to 2 levels
+  // (the team is 6 people; deeper recursion is not worth the read cost).
+  function managesDirect(uid) {
+    return get(/databases/$(database)/documents/users/$(uid)).data.managerId == request.auth.uid;
+  }
+
+  function paradiseEmail() {
+    return signedIn()
+      && request.auth.token.email != null
+      && request.auth.token.email.matches('.*@paradisefoodcourt[.]in');
+  }
+
+  match /databases/{database}/documents {
+
+    // ---- users: readable by staff, writable only by admin ----------------
+    match /users/{uid} {
+      allow read: if isStaff();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ---- accounts --------------------------------------------------------
+    match /accounts/{id} {
+      allow read: if isStaff();
+      allow create: if isStaff() && paradiseEmail();
+      // Ownership changes are restricted; everything else is open to staff.
+      allow update: if isStaff() && (
+        request.resource.data.owner == resource.data.owner
+        || isAdmin()
+        || resource.data.owner == request.auth.uid
+      );
+      allow delete: if isAdmin();
+    }
+
+    match /contacts/{id} {
+      allow read: if isStaff();
+      allow create, update: if isStaff() && paradiseEmail();
+      allow delete: if isAdmin();
+    }
+
+    // ---- opportunities ---------------------------------------------------
+    // Stage transitions are validated in Cloud Functions (mandatory fields
+    // differ per stage). These rules stop the obvious abuses only.
+    match /opportunities/{id} {
+      allow read: if isStaff();
+      allow create: if isStaff() && paradiseEmail()
+        && request.resource.data.stage is int
+        && request.resource.data.stage >= 0
+        && request.resource.data.stage <= 6;
+      allow update: if isStaff() && paradiseEmail()
+        && request.resource.data.stage is int
+        && request.resource.data.stage >= 0
+        && request.resource.data.stage <= 6
+        // an open deal must always carry a next action
+        && (request.resource.data.stage >= 5
+            || request.resource.data.nextActionDate != null)
+        // cancelling requires a reason
+        && (request.resource.data.stage != 6
+            || (request.resource.data.lossReason != null
+                && request.resource.data.lossReason != ''));
+      allow delete: if isAdmin();
+    }
+
+    // ---- stage history: append only, never edited -------------------------
+    match /stageHistory/{id} {
+      allow read: if isStaff();
+      allow create: if isStaff();
+      allow update, delete: if false;
+    }
+
+    // ---- activities: append only -----------------------------------------
+    match /activities/{id} {
+      allow read: if isStaff();
+      allow create: if isStaff() && paradiseEmail()
+        && request.resource.data.loggedBy == request.auth.uid;
+      allow update, delete: if isAdmin();
+    }
+
+    // ---- orders ----------------------------------------------------------
+    // Invoice number and payment status are mandatory. Enforced here as well
+    // as in the UI, because revenue depends on it.
+    match /orders/{id} {
+      allow read: if isStaff();
+      allow create: if isStaff() && paradiseEmail()
+        && request.resource.data.value > 0
+        && request.resource.data.store != ''
+        && request.resource.data.invoiceNumber != ''
+        && request.resource.data.paymentStatus != '';
+      allow update: if isStaff() && paradiseEmail();
+      allow delete: if isAdmin();
+    }
+
+    // ---- targets: admin sets them, everyone reads --------------------------
+    match /targets/{id} {
+      allow read: if isStaff();
+      allow write: if isAdmin();
+    }
+
+    // ---- credit splits: request freely, approve as admin -------------------
+    match /creditSplits/{id} {
+      allow read: if isStaff();
+      allow create: if isStaff() && request.resource.data.status == 'pending';
+      allow update: if isAdmin()
+        || (isStaff() && resource.data.status == 'pending'
+            && request.resource.data.status == 'pending');
+      allow delete: if isAdmin();
+    }
+
+    // ---- prospects: Anushikha's cold lists, outside the pipeline -----------
+    match /prospects/{id} {
+      allow read: if isStaff();
+      allow create, update: if isStaff() && paradiseEmail();
+      allow delete: if isAdmin();
+    }
+
+    // ---- audit log: written by Functions only ------------------------------
+    match /auditLog/{id} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // ---- OTP codes: never readable from the client -------------------------
+    match /otps/{id} {
+      allow read, write: if false;
+    }
+
+    // ---- meta (import report, config) --------------------------------------
+    match /meta/{id} {
+      allow read: if isStaff();
+      allow write: if isAdmin();
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
