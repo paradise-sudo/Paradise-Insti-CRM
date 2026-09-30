@@ -314,7 +314,9 @@ import { getAuth, signInWithCustomToken, signInWithEmailAndPassword,
          browserSessionPersistence, inMemoryPersistence,
          onAuthStateChanged, signOut }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
-import { getFirestore, collection, getDocs, doc, getDoc, setDoc, updateDoc,
+import { getFirestore, initializeFirestore, persistentLocalCache,
+         persistentMultipleTabManager,
+         collection, getDocs, doc, getDoc, setDoc, updateDoc,
          addDoc, query, where, serverTimestamp, writeBatch }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 import { getFunctions, httpsCallable }
@@ -335,7 +337,18 @@ const REGION = 'asia-south1';
 
 const fb   = initializeApp(firebaseConfig);
 const auth = getAuth(fb);
-const db   = getFirestore(fb);
+/* Firestore keeps a copy in IndexedDB, so a second visit reads from disk and
+   asks the server only for what changed. The first load of 2,000 accounts and
+   2,000 opportunities is unavoidable; every load after it should not be. */
+let db;
+try {
+  db = initializeFirestore(fb, {
+    localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() })
+  });
+} catch (e) {
+  // Private browsing blocks IndexedDB. Slower, but it still works.
+  db = getFirestore(fb);
+}
 const fns  = getFunctions(fb, REGION);
 const call = n => httpsCallable(fns, n);
 
@@ -680,9 +693,12 @@ async function boot(authUser){
                              [S.me.role] || S.me.role) + ' · ' + (S.me.email||'');
   $('#whoChip').textContent = (S.me.name||'?').split(' ')[0];
 
-  const [users, accounts, opps, contacts] = await Promise.all(
-    ['users','accounts','opportunities','contacts'].map(grab));
-  S.users = users; S.accounts = accounts; S.opps = opps; S.contacts = contacts;
+  // Contacts are 2,000 documents used only by phone search, so they are not
+  // worth holding the whole app behind. Orders and targets already load after
+  // the first paint; this pulls contacts into that group too.
+  const [users, accounts, opps] = await Promise.all(
+    ['users','accounts','opportunities'].map(grab));
+  S.users = users; S.accounts = accounts; S.opps = opps; S.contacts = [];
   users.forEach(u => S.byId[u.id] = u);
   accounts.forEach(a => S.byId[a.id] = a);
 
@@ -693,6 +709,7 @@ async function boot(authUser){
   // Heavier collections load after the first paint.
   grab('orders').then(o => { S.orders = o;  if (S.view==='dash') go('dash'); });
   grab('targets').then(t => { S.targets = t; if (S.view==='dash') go('dash'); });
+  grab('contacts').then(c => { S.contacts = c; S.contactsReady = true; });
 }
 
 /* ==================================================================== NAV */
@@ -878,6 +895,14 @@ function runSearch(raw){
   const d = digits(t);
   let hits;
   if (d.length >= 3) {
+    // Contacts load after the first paint, so say so rather than returning
+    // an empty list that reads like "this number is not in the system".
+    if (!S.contactsReady) {
+      box.innerHTML = `<div class="empty"><span class="spin"></span><br><br>
+        Still loading contact numbers — try again in a moment, or search by
+        account name.</div>`;
+      return;
+    }
     const accIds = new Set(S.contacts
       .filter(c => (c.phoneNormalised || digits(c.phone)).includes(d))
       .map(c => c.accountId));
@@ -1023,8 +1048,10 @@ function stageExtra(){
         <div><label for="ov">Order value <span class="req">*</span></label>
           <input id="ov" class="fld" inputmode="numeric"
             value="${opp && opp.expectedValue ? Math.round(opp.expectedValue) : ''}"></div>
-        <div><label for="ostore">Store / site</label>
-          <input id="ostore" class="fld" placeholder="Where it is served"></div>
+        <div><label for="ostore">Store the invoice was punched at
+          <span class="req">*</span></label>
+          <input id="ostore" class="fld"
+                 placeholder="Which store raised it"></div>
       </div>
       <div class="row" style="margin-bottom:12px">
         <div><label for="inv">Invoice number <span class="req">*</span></label>
@@ -1034,9 +1061,10 @@ function stageExtra(){
             <option value="">Pick one</option>
             ${PAY_STATUS.map(p=>`<option>${p}</option>`).join('')}</select></div>
       </div>
-      <p class="hint">Invoice number and payment status are required — the
-        database rejects a closed order without them. Payment status starts
-        blank on purpose, so it is a choice rather than a default.</p>`;
+      <p class="hint">Store, invoice number and payment status are all
+        required — the database rejects a closed order without them. Payment
+        status starts blank on purpose, so it is a choice rather than a
+        default.</p>`;
   }
 
   if (s === CANCELLED) {
@@ -1081,6 +1109,10 @@ async function saveLog(){
     if (!Number(digits(val('ov')))) return lmsg('Order value is required to close.','err');
     if (!val('inv')) return lmsg('Invoice number is required to close.','err');
     if (!val('pay')) return lmsg('Payment status is required to close.','err');
+    // firestore.rules refuses an order with an empty store, so catching it
+    // here is the difference between a clear message and a permission error.
+    if (!val('ostore'))
+      return lmsg('Say which store the invoice was punched at.','err');
   }
   if (s === CANCELLED && !val('loss'))
     return lmsg('Pick a loss reason before cancelling.','err');
