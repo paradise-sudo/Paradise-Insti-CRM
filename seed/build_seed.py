@@ -37,6 +37,8 @@ EMAIL = {k: v.strip().lower() for k, v in {
     'Anushikha':  'anushika.choudhury@paradisefoodcourt.in',   # note: anushika, no 'h'
 }.items()}
 MANAGER = {'Pradeep': 'Sameer', 'Anushikha': 'Sameer', 'Vishwanath': 'Bashab'}
+# Accounts that count as NEW clients regardless of when they first ordered.
+FORCE_NEW = ('azadengineer', 'jcnm')   # 'Azad Engineer' AND 'Azad Engineering'
 ADMIN_EMAIL = 'kumar.ayush@paradisefoodcourt.in'.strip().lower()
 
 # The FY27 workbook is authoritative from this date; history rows on or after
@@ -288,6 +290,16 @@ for key, rs in by_account.items():
     cur_fy = CURRENT_FY
     klass = 'old' if (first_order and fy_of(first_order) < cur_fy) else 'new'
 
+    # Ayush, 30-Sep-26: Azad Engineering and JCNM Church count as NEW clients
+    # for incentive, whatever their order history says. Matched on the
+    # normalised name and deliberately narrow - 'church' alone hits 38
+    # unrelated accounts, so only JCNM is taken. MSN is untouched: it has its
+    # own flat 0.3% and is neither new nor old.
+    if any(h in key for h in FORCE_NEW):
+        klass = 'new'
+        report['forced_new_client'] += 1
+        notes.append('Counted as a new client on instruction: ' + last['account'][:60])
+
     owner = last['rep'] or (paid[-1]['rep'] if paid else '')
     accounts.append(dict(
         id=aid, name=last['account'][:120], nameNormalised=key,
@@ -506,7 +518,7 @@ def parse_target_sheet(ws, fy_start=2026):
             for j, mk in cols.items():
                 v = ws.cell(i, j).value
                 if isinstance(v, (int, float)) and v:
-                    yield bucket, label, mk, float(v)
+                    yield bucket, label, mk, float(v), r
 
 
 def load_targets(path):
@@ -534,7 +546,30 @@ def load_targets(path):
 
     for sheet, want_reps in [(s, True) for s in main] + \
                             [(s, False) for s in extra]:
-        for bucket, label, mk, amt in parse_target_sheet(wb[sheet]):
+        rows = list(parse_target_sheet(wb[sheet]))
+
+        # A sheet can hold the SAME block twice. 'Incentive Target MOM' carries
+        # an older one naming people 'Person 1'..'Person 4' and a newer one
+        # using the real names, and they disagree about the named accounts -
+        # the old one puts Azad in Oct and MSN as one Rs 1.8 Cr lump in Nov,
+        # the new one puts Azad in Nov and splits MSN into Jul and Dec. Read
+        # both and the account is counted in every month either block mentions.
+        # So: if any block in this sheet names a real rep, trust only those
+        # blocks and drop the placeholder ones entirely.
+        # The tell is the PLACEHOLDER names, not the real ones - the stale
+        # block carries Bashab and Sameer too, so 'contains a real rep' does
+        # not separate them. Any block holding a 'Person N' row is the old
+        # plan; drop everything sitting near it, named accounts included.
+        stale = {ar for _, lab, _, _, ar in rows
+                 if lab.strip().lower().startswith('person ')}
+        if stale:
+            drop = {ar for _, _, _, _, ar in rows
+                    if any(abs(ar - st) <= 20 for st in stale)}
+            report['target_rows_from_stale_block'] += len(
+                [1 for t in rows if t[4] in drop])
+            rows = [t for t in rows if t[4] not in drop]
+
+        for bucket, label, mk, amt, _ in rows:
             clean = label.strip()
             named = any(h in clean.lower() for h in NAMED_ACCOUNT_HINT)
             if not want_reps and not named:
@@ -557,8 +592,23 @@ def load_targets(path):
                 # A lump sitting on top of the rep targets, carried in the
                 # Total Target row. Scoped to the account, owned by nobody,
                 # so it never inflates a rep's achievement.
-                targets.append(dict(id=sid('tgt', clean + mk + bucket),
-                                    userId=None, month=mk, bucket=bucket,
+                #
+                # The sheet files JCNM Church and Azad Engineer under Old
+                # Order. Ayush's instruction on 30-Sep-26 is that both count
+                # as NEW, so the bucket is corrected here to match how their
+                # revenue is now classified. MSN Labs keeps whatever the
+                # sheet says - it is neither new nor old and pays a flat
+                # 0.3% with no target of its own.
+                b2 = bucket
+                if bucket == 'old' and any(h in norm(clean) for h in FORCE_NEW):
+                    b2 = 'new'
+                    report['named_account_rebucketed'] += 1
+                elif bucket == 'old' and 'msn' in norm(clean):
+                    # MSN is its own incentive bucket at a flat 0.3%, neither
+                    # new nor old. Filing it under 'old' would misread.
+                    b2 = 'msn'
+                targets.append(dict(id=sid('tgt', clean + mk + b2),
+                                    userId=None, month=mk, bucket=b2,
                                     amount=round(amt, 2), scope='account',
                                     accountName=clean))
                 report['target_named_account'] += 1
