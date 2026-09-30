@@ -1361,6 +1361,10 @@ async function saveLog(){
       const orderData = {
         accountId: account.id, opportunityId: oppId, bookedBy: S.me.id,
         value: Number(digits(val('ov'))), orderDate: stamp(when),
+        // What this deal was forecast at when it closed. Captured per order,
+        // because an account that reorders has a forecast per order and not
+        // one for all time.
+        expectedValue: (opp && opp.expectedValue) || 0,
         store: val('ostore') || '', channel:'app',
         invoiceNumber: val('inv'), paymentStatus: val('pay'),
         paymentReceivedAt: null, financeApprovedAt: null,
@@ -1727,6 +1731,21 @@ function viewDash() {
     return { id, name: userName(id), v, t, a: t ? v / t : 0, n: mine.length };
   }).filter(r => r.v || r.t).sort((x, y) => y.v - x.v);
 
+  /* Forecast against outturn, per rep. Expected Business is only on orders
+     logged in the app or loaded by a seed built after 1-Oct-26, so a rep with
+     no forecast on file is left out rather than shown as 0% accurate. */
+  const fcRep = uids.map(id => {
+    const mine = ord.filter(o => creditOf(o, id) > 0 && o.expectedValue);
+    const exp = mine.reduce((n, o) => n + (o.expectedValue || 0), 0);
+    const act = mine.reduce((n, o) => n + creditOf(o, id), 0);
+    return { id, name: userName(id), n: mine.length, exp, act,
+             r: exp ? act / exp : 0 };
+  }).filter(r => r.exp).sort((a, b) => b.act - a.act);
+  const fcExp = fcRep.reduce((n, r) => n + r.exp, 0);
+  const fcAct = fcRep.reduce((n, r) => n + r.act, 0);
+  const fcN   = fcRep.reduce((n, r) => n + r.n, 0);
+  const fcMissing = ord.length - fcN;
+
   const unowned = ord.filter(o => !o.bookedBy);
   const unownedVal = unowned.reduce((n, o) => n + (o.value || 0), 0);
 
@@ -1744,8 +1763,9 @@ function viewDash() {
     </div>
 
     <div class="grid2" style="margin-bottom:14px">
-      ${expected ? tile('Expected business', inr(expected),
-             (net/expected*100).toFixed(0) + '% realised') : ''}
+      ${fcExp ? tile('Expected business', inr(fcExp),
+             (fcAct/fcExp*100).toFixed(0) + '% realised on '
+             + fcN + ' order' + (fcN===1?'':'s')) : ''}
       ${tile('Committed at ' + ab('C3'), inr(committed),
              open.filter(o => o.stage === 4).length + ' waiting on the order')}
       ${tile('Accounts touched', S.acts ? String(touched) : '—',
@@ -1824,6 +1844,32 @@ function viewDash() {
         <p class="hint" style="margin-top:10px">Pending is billed revenue with
           no payment recorded against it yet.</p>
       </div>
+    </div>
+
+    <div class="card">
+      <h2>Forecast against outturn</h2>
+      ${fcExp ? `
+        ${dtable(['Rep','Orders','Expected','Billed','Realised'],
+          fcRep.map(r => ({ c:[
+            esc(r.name), String(r.n), inr(r.exp), inr(r.act),
+            `<b style="color:var(${r.r >= 0.9 && r.r <= 1.2 ? '--ok'
+              : r.r < 0.9 ? '--bad' : '--warn'})">${(r.r*100).toFixed(0)}%</b>`
+          ] })),
+          ['Team', String(fcN), inr(fcExp), inr(fcAct),
+           (fcAct/fcExp*100).toFixed(0) + '%'])}
+        <p class="hint" style="margin-top:10px">What a deal was forecast at
+          when it closed, against what it actually billed. Near 100% means the
+          rep's estimates can be trusted for planning. Well under means they
+          close below their own number; well over means they are sandbagging
+          it, which is just as hard to plan against.${fcMissing > 0 ? `
+          <br><b>${fcMissing}</b> of ${ord.length} orders in this range carry
+          no forecast and are left out — those came from the workbook
+          before the per-order figure was kept.` : ''}</p>`
+      : `<div class="empty">No order in this range carries a forecast yet.
+          <br><span class="sm">Expected Business now rides on each order, but
+          only on orders logged in the app from today, or loaded by a seed
+          rebuilt with the current build_seed.py. Run it and this fills in.
+          </span></div>`}
     </div>
 
     <div class="card">
@@ -3498,7 +3544,8 @@ const EX_SETS = {
     ['Store',      o => o.store || ''],
     ['Invoice',    o => o.invoiceNumber || ''],
     ['Payment',    o => o.paymentStatus || ''],
-    ['Channel',    o => o.channel || '']] },
+    ['Channel',    o => o.channel || ''],
+    ['Expected',   o => o.expectedValue || '']] },
   pipeline: { dated:false, cols:[
     ['Account',    o => accName(o.accountId)],
     ['Stage',      o => STAGES[o.stage].k],
