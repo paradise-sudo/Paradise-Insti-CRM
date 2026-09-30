@@ -1,1 +1,26 @@
-
+{
+  "indexes": [
+    { "collectionGroup": "opportunities", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "owner", "order": "ASCENDING" },
+      { "fieldPath": "stage", "order": "ASCENDING" } ] },
+    { "collectionGroup": "opportunities", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "stage", "order": "ASCENDING" },
+      { "fieldPath": "nextActionDate", "order": "ASCENDING" } ] },
+    { "collectionGroup": "orders", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "bookedBy", "order": "ASCENDING" },
+      { "fieldPath": "orderDate", "order": "DESCENDING" } ] },
+    { "collectionGroup": "orders", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "accountId", "order": "ASCENDING" },
+      { "fieldPath": "orderDate", "order": "DESCENDING" } ] },
+    { "collectionGroup": "activities", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "accountId", "order": "ASCENDING" },
+      { "fieldPath": "loggedAt", "order": "DESCENDING" } ] },
+    { "collectionGroup": "activities", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "loggedBy", "order": "ASCENDING" },
+      { "fieldPath": "loggedAt", "order": "DESCENDING" } ] },
+    { "collectionGroup": "stageHistory", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "opportunityId", "order": "ASCENDING" },
+      { "fieldPath": "changedAt", "order": "ASCENDING" } ] }
+  ],
+  "fieldOverrides": []
+}
