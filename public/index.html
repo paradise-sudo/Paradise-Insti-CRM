@@ -1417,41 +1417,6 @@ function bars(items, hue){
   }).join('') + `</div>`;
 }
 
-/* Revenue over the range. Buckets follow the span: daily up to about a month,
-   weekly up to six, monthly beyond - so the bar count stays readable instead
-   of turning into 700 hairlines for a two-year range. */
-function timeSeries(ord, from, to){
-  const a = asDate(from), b = asDate(to);
-  const days = Math.round((b - a) / DAY) + 1;
-  const step = days <= 45 ? 1 : days <= 200 ? 7 : 30;
-  const n = Math.ceil(days / step);
-  const buck = new Array(n).fill(0);
-  ord.forEach(o => {
-    const d = parseDate(o.orderDate);
-    if (!d) return;
-    const i = Math.floor(Math.round((d - a) / DAY) / step);
-    if (i >= 0 && i < n) buck[i] += o.value || 0;
-  });
-  const mx = Math.max(1, ...buck);
-  const lbl = i => {
-    const d = new Date(a.getTime() + i * step * DAY);
-    return step === 1 ? iso(d).slice(5)
-         : step === 7 ? 'week of ' + iso(d).slice(5)
-         : monthLabel(iso(d).slice(0,7));
-  };
-  return `<div style="display:flex;gap:2px;align-items:flex-end;height:110px;
-      margin-top:4px;overflow-x:auto">${buck.map((v,i) =>
-      `<div title="${esc(lbl(i))}: ${inr(v)}" style="flex:1 0 5px;
-        display:flex;flex-direction:column;justify-content:flex-end;height:100%">
-        <div style="width:100%;height:${Math.max(v?2:0, v/mx*100)}%;
-          background:hsl(340 55% 58%);border-radius:2px 2px 0 0"></div></div>`
-    ).join('')}</div>
-    <div class="sm muted" style="display:flex;justify-content:space-between;
-      margin-top:4px"><span>${esc(from.slice(5))}</span>
-      <span>${step===1?'daily':step===7?'weekly':'monthly'}</span>
-      <span>${esc(to.slice(5))}</span></div>`;
-}
-
 /* A table that scrolls sideways on a phone rather than crushing seven
    columns into 390px. */
 function dtable(head, rows, foot){
@@ -1542,18 +1507,38 @@ function viewDash() {
   const committed = open.filter(o => o.stage === 4)
                         .reduce((n, o) => n + (o.expectedValue || 0), 0);
 
-  /* Volume at every stage, over the RANGE rather than as-of-now: how many
-     deals passed through each stage and what they were worth. Cancelled and
-     closed are in here on purpose - the funnel above shows only what is
-     still open, and "how many did we lose" is the other half of the story. */
-  const inRangeOpps = S.opps.filter(o => oursDeal(o, uids));
+  /* Volume at every stage, FOR THE RANGE - deals that moved into each stage
+     during this window, read off stageSince. Counting every deal that
+     currently sits at a stage instead put 697 closed deals on a screen whose
+     headline says 49 orders, which is just two different questions stacked on
+     one table. Cancelled and closed stay in: the funnel above shows only what
+     is open, and how many were lost is the other half of the story.
+
+     Billed comes from the orders themselves, so the C4 row ties to Net sales
+     at the top rather than being a second, quietly different figure. */
+  const billedByOpp = {};
+  ord.forEach(o => billedByOpp[o.opportunityId] =
+    (billedByOpp[o.opportunityId] || 0) + (o.value || 0));
+
+  const movedIn = S.opps.filter(o => {
+    if (!oursDeal(o, uids)) return false;
+    const d = parseDate(o.stageSince);
+    if (!d) return false;
+    const k = iso(d);
+    return k >= from && k <= to;
+  });
   const volRows = STAGES.map((st, i) => {
-    const rows = inRangeOpps.filter(o => o.stage === i);
+    const rows = movedIn.filter(o => o.stage === i);
     return { i, k: st.k, n: rows.length,
              exp: rows.reduce((n, o) => n + (o.expectedValue || 0), 0),
-             act: rows.reduce((n, o) => n + (o.confirmedValue || 0), 0) };
+             act: rows.reduce((n, o) => n + (billedByOpp[o.id] || 0), 0) };
   });
   const volTot = volRows.reduce((n, r) => n + r.n, 0);
+  /* Money billed in this range on a deal whose stage last moved OUTSIDE it -
+     agreed in August, invoiced in September. It belongs to no row above, so
+     it is stated rather than quietly dropped. */
+  const volBilled = volRows.reduce((n, r) => n + r.act, 0);
+  const volElsewhere = net - volBilled;
 
   /* Region, type and how the team is making contact. Region and type come off
      the ACCOUNT, so they split billed revenue; connect status comes off the
@@ -1651,15 +1636,8 @@ function viewDash() {
     </div>
 
     <div class="card">
-      <h2>Revenue across the range</h2>
-      ${timeSeries(ord, from, to)}
-      <p class="hint" style="margin-top:10px">Buckets follow the span — daily
-        up to six weeks, weekly up to six months, monthly beyond.</p>
-    </div>
-
-    <div class="card">
-      <h2>Volume at every stage</h2>
-      ${dtable(['Stage','Deals','Expected','Confirmed','Share'],
+      <h2>Stage movement in this range</h2>
+      ${volTot ? dtable(['Stage','Deals','Expected','Billed','Share'],
         volRows.filter(r => r.n).map(r => ({ click:r.i < 5 ? r.i : null, c:[
           `<span class="tag" style="background:var(${STAGES[r.i].v})">${r.k}</span>
            <span class="sm muted">${esc(STAGES[r.i].n)}</span>`,
@@ -1667,11 +1645,16 @@ function viewDash() {
           volTot ? (r.n/volTot*100).toFixed(0) + '%' : '—'] })),
         ['Total', String(volTot),
          inr(volRows.reduce((n,r) => n + r.exp, 0)),
-         inr(volRows.reduce((n,r) => n + r.act, 0)), '100%'])}
-      <p class="hint" style="margin-top:10px">Every deal you can see, by where
-        it sits now — including ${ab('C4')} and cancelled, which the funnel
-        above leaves out. How many were lost is the other half of the story.
-        Tap an open stage for its deals.</p>
+         inr(volRows.reduce((n,r) => n + r.act, 0)), '100%'])
+        : '<div class="empty">No deal changed stage in this range.</div>'}
+      <p class="hint" style="margin-top:10px">Deals that <b>moved into</b> each
+        stage between ${esc(from)} and ${esc(to)} — not every deal sitting
+        there today. ${ab('C4')} and cancelled are included, because how many
+        were lost is the other half of the story. Tap an open stage for its
+        deals.${Math.abs(volElsewhere) > 1 ? ` A further <b>${inr(volElsewhere)}</b>
+        was billed in this range on deals that last changed stage outside it
+        — agreed one month, invoiced the next — so Billed here does not
+        add up to Net sales, and is not meant to.` : ''}</p>
     </div>
 
     <div class="grid2" style="margin-bottom:14px">
