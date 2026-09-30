@@ -735,7 +735,8 @@ async function boot(authUser){
 
   buildNav();
   S.loaded = true;
-  go(S.view);
+  go(VIEWS[S.view] && VIEWS[S.view].roles.includes(S.me.role)
+     ? S.view : firstView());
 
   // The rest attach after the first paint and fill in as they arrive.
   live('orders'); live('targets'); live('contacts');
@@ -825,21 +826,28 @@ function flushRepaint(){
 
 /* ==================================================================== NAV */
 const VIEWS = {
-  dash:      { t:'Dashboard',        ico:'▤', roles:['rep','manager','admin'] },
-  log:       { t:'Log activity',     ico:'✎', roles:['rep','manager','admin'] },
-  pipeline:  { t:'Pipeline',         ico:'▦', roles:['rep','manager','admin'] },
-  exception: { t:'Exceptions',       ico:'!', roles:['rep','manager','admin'] },
-  winback:   { t:'Win back',         ico:'↺', roles:['rep','manager','admin'] },
-  shared:    { t:'Shared accounts',  ico:'⇄', roles:['rep','manager','admin'] },
-  feed:      { t:'Entry log',        ico:'≡', roles:['rep','manager','admin'] },
-  history:   { t:'Client history',   ico:'⏱', roles:['rep','manager','admin'] },
-  data:      { t:'Data & imports',   ico:'⇓', roles:['rep','manager','admin'] },
-  // Admin only, deliberately. The calculation returns every person's pay in
-  // one payload and the callable refuses anyone else, so showing a manager a
-  // screen that can only fail would be worse than not showing it.
-  incentive: { t:'Incentive',        ico:'₹', roles:['admin'] },
-  admin:     { t:'Admin',            ico:'⚙', roles:['admin'] }
+  /* Set by Ayush, 1-Oct-26. A rep logs, sees what they logged, works their
+     pipeline, chases dormant clients and can check their own incentive.
+     Everything else - the dashboard, exceptions, shared accounts, client
+     history and the data screen - sits with the admin. A manager has the
+     same menu; what differs is the data behind it, because every screen
+     scopes to whoever reports up to them. */
+  log:       { t:'Log activity',     ico:'\u270e', roles:['rep','manager','admin'] },
+  feed:      { t:'Entry log',        ico:'\u2261', roles:['rep','manager','admin'] },
+  pipeline:  { t:'Pipeline',         ico:'\u25a6', roles:['rep','manager','admin'] },
+  winback:   { t:'Win back',         ico:'\u21ba', roles:['rep','manager','admin'] },
+  incentive: { t:'Incentive',        ico:'\u20b9', roles:['rep','manager','admin'] },
+  dash:      { t:'Dashboard',        ico:'\u25a4', roles:['admin'] },
+  exception: { t:'Exceptions',       ico:'!',      roles:['admin'] },
+  shared:    { t:'Shared accounts',  ico:'\u21c4', roles:['admin'] },
+  history:   { t:'Client history',   ico:'\u23f1', roles:['admin'] },
+  data:      { t:'Data & imports',   ico:'\u21d3', roles:['admin'] },
+  admin:     { t:'Admin',            ico:'\u2699', roles:['admin'] }
 };
+
+/* A rep has no Dashboard, so 'dash' cannot be the fallback for everyone. */
+const firstView = () => Object.keys(VIEWS)
+  .find(k => VIEWS[k].roles.includes(S.me.role)) || 'log';
 
 function buildNav(){
   const role = S.me.role;
@@ -867,7 +875,7 @@ $('#scrim').onclick  = closeDrawer;
 document.addEventListener('keydown', e => { if (e.key==='Escape') closeDrawer(); });
 
 function go(v){
-  if (!VIEWS[v] || !VIEWS[v].roles.includes(S.me.role)) v = 'dash';
+  if (!VIEWS[v] || !VIEWS[v].roles.includes(S.me.role)) v = firstView();
   if (v !== 'history') S.histAcc = null;   // don't reopen one client later
   S.view = v;
   $('#vtitle').textContent = VIEWS[v].t;
@@ -3451,10 +3459,7 @@ function viewIncentive(){
       const r = await call('calculateIncentive')({ month: S.incMonth });
       paintIncentive(r.data);
     } catch (e) {
-      msg('imsg', /permission/i.test(e.message || '')
-        ? 'Only the administrator can run this. The figures cover everyone’s '
-          + 'pay, so the calculation is not exposed to the team.'
-        : friendly(e, 'Could not calculate.'));
+      msg('imsg', friendly(e, 'Could not calculate.'));
     } finally { done(b); }
   };
 }
@@ -3494,18 +3499,35 @@ function paintIncentive(d){
         ${pct(d.config.gateOld)} gate.</p>` : ''}
     </div>`;
 
+  /* A rep is sent their own row and nothing else, a manager their team's, and
+     only the admin gets the scheme totals. So the header adapts rather than
+     reaching for figures deliberately absent from the payload. */
+  const own = d.rows.reduce((n, r) => ({
+    newRev: n.newRev + r.newRev, oldRev: n.oldRev + r.oldRev,
+    msnRev: n.msnRev + r.msnRev }), { newRev:0, oldRev:0, msnRev:0 });
+
   $('#ibody').innerHTML = `
     <div class="grid2" style="margin-bottom:14px">
-      ${tile('Total scheme cost', inr(d.totalSchemeCost),
-             monthLabel(d.month) + ' · ' + d.rows.length + ' people')}
-      ${tile('Team payout', inr(d.team.payout), 'before the head’s share')}
-      ${tile('Head’s share', inr(d.headPayout),
-             (d.config.headShare*100).toFixed(0) + '% of the collective result')}
-      ${tile('Revenue in scope', inr(d.team.newRev + d.team.oldRev + d.team.msnRev),
-             inr(d.team.newRev) + ' new · ' + inr(d.team.oldRev) + ' old')}
+      ${d.team ? tile('Total scheme cost', inr(d.totalSchemeCost),
+             monthLabel(d.month) + ' · ' + d.rows.length + ' people')
+        : tile(d.scope === 'self' ? 'You earn' : 'Your team earns',
+               inr(d.yourPayout || 0),
+               monthLabel(d.month) + ' · ' + d.rows.length
+               + (d.rows.length === 1 ? ' person' : ' people'), '--ok')}
+      ${d.team ? tile('Team payout', inr(d.team.payout),
+             'before the head’s share') : ''}
+      ${d.team ? tile('Head’s share', inr(d.headPayout),
+             (d.config.headShare*100).toFixed(0) + '% of the collective result') : ''}
+      ${tile('Revenue in scope',
+             inr(d.team ? d.team.newRev + d.team.oldRev + d.team.msnRev
+                        : own.newRev + own.oldRev + own.msnRev),
+             inr(d.team ? d.team.newRev : own.newRev) + ' new · '
+             + inr(d.team ? d.team.oldRev : own.oldRev) + ' old')}
     </div>
-    ${d.rows.map(repCard).join('')}
-    <div class="card">
+    ${d.rows.length ? d.rows.map(repCard).join('')
+      : `<div class="card"><div class="empty">Nothing was booked in
+         ${esc(monthLabel(d.month))}, so there is nothing to work out.</div></div>`}
+    ${d.collective ? `<div class="card">
       <h2>The collective, for the head’s override</h2>
       <p class="sm muted" style="margin:-4px 0 10px">Same three buckets, applied
         once to the team total rather than summing what each rep earned, then
@@ -3521,7 +3543,7 @@ function paintIncentive(d){
           <span class="meta"><b>${inr(d.collective.result)}</b>
             → ${inr(d.headPayout)}</span></div>
       </div>
-    </div>
+    </div>` : ''}
     ${d.accountTargets && d.accountTargets.length ? `
     <div class="card">
       <h2>Named-account targets, reported only</h2>

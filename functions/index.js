@@ -554,14 +554,38 @@ exports.annualClientAgeing = sender()
 exports.calculateIncentive = functions.region(REGION).https.onCall(async (data, ctx) => {
   if (!ctx.auth) throw new functions.https.HttpsError('unauthenticated', 'Sign in.');
   const me = await userDoc(ctx.auth.uid);
-  if (!me || me.role !== 'admin') {
-    throw new functions.https.HttpsError('permission-denied', 'Admin only.');
+  if (!me || me.active === false) {
+    throw new functions.https.HttpsError('permission-denied', 'No access.');
   }
+  const isAdmin = me.role === 'admin';
   const month = String(data.month || '').slice(0, 7);          // 'YYYY-MM'
   if (!/^\d{4}-\d{2}$/.test(month)) {
     throw new functions.https.HttpsError('invalid-argument', 'month must be YYYY-MM');
   }
   const c = await getConfig();
+
+  /* Who may this caller see? An admin sees everyone; anybody else sees
+     themselves plus whoever reports up to them, at any depth. Worked out
+     here from the users collection, never taken from the client - the whole
+     point is that a rep cannot ask for somebody else's payout. */
+  const allUsers = [];
+  (await db.collection('users').get()).forEach(d =>
+    allUsers.push(Object.assign({ id: d.id }, d.data())));
+  let scope;
+  if (isAdmin) {
+    scope = new Set(allUsers.map(u => u.id));
+  } else {
+    scope = new Set([ctx.auth.uid]);
+    const walk = (p, depth) => {
+      if (depth > 20) return;                       // cycle guard
+      allUsers.filter(u => u.managerId === p).forEach(u => {
+        if (scope.has(u.id)) return;
+        scope.add(u.id);
+        walk(u.id, depth + 1);
+      });
+    };
+    walk(ctx.auth.uid, 0);
+  }
 
   const from = month + '-01';
   const to = month + '-31';
@@ -656,24 +680,39 @@ exports.calculateIncentive = functions.region(REGION).https.onCall(async (data, 
   const collective = cn.pay + co.pay + cm;
   const headPay = Math.round(collective * c.headShare);
 
+  /* A rep gets their own row and nothing else. A manager gets their team's.
+     The team totals, the collective and the head's override are whole-scheme
+     figures, so they go to the admin alone - a rep seeing "total scheme cost"
+     can work backwards to what everyone else earned. */
+  const mine = rows.filter(r => scope.has(r.uid));
+
   const result = {
     month, config: c,
-    rows: rows.sort((a, b) => b.payout - a.payout),
-    team: T,
-    collective: {
-      newAch: cn.ach, newBand: cn.band, newPay: cn.pay,
-      oldAch: co.ach, oldPay: co.pay, msnPay: cm, result: collective
-    },
-    headPayout: headPay,
-    totalSchemeCost: T.payout + headPay,
+    scope: isAdmin ? 'all' : (mine.length > 1 ? 'team' : 'self'),
+    rows: mine.sort((a, b) => b.payout - a.payout),
+    yourPayout: mine.reduce((n, r) => n + r.payout, 0),
     // Reported, never paid on: the named-account lumps for this month.
     // Shown so the dashboard's target line matches the sheet's Total Target.
-    accountTargets: accountTargets
-      .filter(t => t.bucket === 'overall')
-      .map(t => ({ account: t.accountName, amount: t.amount })),
     calculatedAt: new Date().toISOString(), calculatedBy: ctx.auth.uid
   };
-  await db.collection('incentiveRuns').doc(month).set(result);
+
+  if (isAdmin) {
+    Object.assign(result, {
+      team: T,
+      collective: {
+        newAch: cn.ach, newBand: cn.band, newPay: cn.pay,
+        oldAch: co.ach, oldPay: co.pay, msnPay: cm, result: collective
+      },
+      headPayout: headPay,
+      totalSchemeCost: T.payout + headPay,
+      accountTargets: accountTargets
+        .filter(t => t.bucket === 'overall')
+        .map(t => ({ account: t.accountName, amount: t.amount }))
+    });
+    // Only the admin's run is the record. A rep's filtered view must never
+    // overwrite the month's stored result with a one-row version of it.
+    await db.collection('incentiveRuns').doc(month).set(result);
+  }
   return result;
 });
 
