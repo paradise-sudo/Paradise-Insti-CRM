@@ -6,50 +6,49 @@ rules_version = '2';
 // hiding a button. Anyone on the team may LOG activity and orders on any
 // account (Ayush's decision), but ownership, targets, splits and the
 // reporting tree are restricted.
+//
+// Every helper lives INSIDE the match block on purpose. Declared at service
+// level they compile, but `database` and `request` are not bound there, so
+// me() errors at evaluation time and an error denies the request - which
+// would have meant isStaff() false for everyone and the whole app locked out.
 
 service cloud.firestore {
-  function signedIn() {
-    return request.auth != null;
-  }
-
-  function me() {
-    return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
-  }
-
-  function role() {
-    return signedIn() ? me().role : 'none';
-  }
-
-  function isAdmin() {
-    return role() == 'admin';
-  }
-
-  // Anyone on the Paradise domain may create their own account (Ayush's
-  // decision, 30-Sep-26), so deactivation is the only lever left afterwards.
-  // It has to bite HERE, not only at sign-in: a token already minted stays
-  // valid for the best part of an hour, and without this check a deactivated
-  // person keeps reading and writing until it expires.
-  function active() {
-    return signedIn() && me().active != false;
-  }
-
-  function isStaff() {
-    return active() && role() in ['admin', 'manager', 'rep'];
-  }
-
-  // A manager sees their own reportees, at any depth up to 2 levels
-  // (the team is 6 people; deeper recursion is not worth the read cost).
-  function managesDirect(uid) {
-    return get(/databases/$(database)/documents/users/$(uid)).data.managerId == request.auth.uid;
-  }
-
-  function paradiseEmail() {
-    return signedIn()
-      && request.auth.token.email != null
-      && request.auth.token.email.matches('.*@paradisefoodcourt[.]in');
-  }
-
   match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function me() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function role() {
+      return signedIn() ? me().role : 'none';
+    }
+
+    function isAdmin() {
+      return role() == 'admin';
+    }
+
+    // Anyone on the Paradise domain may create their own account (Ayush's
+    // decision, 30-Sep-26), so deactivation is the only lever left afterwards.
+    // It has to bite HERE, not only at sign-in: a token already minted stays
+    // valid for the best part of an hour, and without this check a deactivated
+    // person keeps reading and writing until it expires.
+    function active() {
+      return signedIn() && me().active != false;
+    }
+
+    function isStaff() {
+      return active() && role() in ['admin', 'manager', 'rep'];
+    }
+
+    function paradiseEmail() {
+      return signedIn()
+        && request.auth.token.email != null
+        && request.auth.token.email.matches('.*@paradisefoodcourt[.]in');
+    }
 
     // ---- users: readable by staff, writable only by admin ----------------
     match /users/{uid} {
