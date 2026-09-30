@@ -36,7 +36,13 @@ EMAIL = {k: v.strip().lower() for k, v in {
     'Pradeep':    'pradeep.kumar@paradisefoodcourt.in',
     'Anushikha':  'anushika.choudhury@paradisefoodcourt.in',   # note: anushika, no 'h'
 }.items()}
-MANAGER = {'Pradeep': 'Sameer', 'Anushikha': 'Sameer', 'Vishwanath': 'Bashab'}
+# Anushikha deliberately reports to nobody but Ayush. She is a central
+# function: every rep's C1 and C2 deals hand off to her for follow-up. Parked
+# under Sameer, as she was, a deal handed over by Bashab or Vishwanath left
+# their tree entirely and reappeared inside Sameer's - so Bangalore could not
+# see its own follow-ups while Hyderabad could. Same routing for everyone,
+# so she sits outside everyone.  (Ayush, 30-Sep-26)
+MANAGER = {'Pradeep': 'Sameer', 'Vishwanath': 'Bashab'}
 # Accounts that count as NEW clients regardless of when they first ordered.
 FORCE_NEW = ('azadengineer', 'jcnm')   # 'Azad Engineer' AND 'Azad Engineering'
 

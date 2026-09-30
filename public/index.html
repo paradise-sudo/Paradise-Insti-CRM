@@ -73,7 +73,7 @@
   .pwbtn{position:absolute;right:4px;top:0;height:46px;display:flex;
     align-items:center;background:none;border:0;font-size:12px;font-weight:700;
     color:var(--brand);padding:0 10px;cursor:pointer}
-grep -c PASTE public/index.html  @media (prefers-color-scheme:dark){
+  @media (prefers-color-scheme:dark){
     :root:not([data-theme=light]) .authtab.active{color:var(--ink);
       border-bottom-color:var(--ink)}
     :root:not([data-theme=light]) .pwbtn{color:var(--c1)}
@@ -387,8 +387,15 @@ const DEFS = {
 };
 const ab = k => `<abbr title="${(DEFS[k]||k).replace(/"/g,'&quot;')}">${k}</abbr>`;
 
-const ACT_TYPES = ['Call','Visit','Email','WhatsApp','Meeting','Sampling'];
-const PAY_STATUS = ['Pending','Partial','Received','Overdue'];
+/* F2F, not Visit. All 4,439 imported activities are either Call or F2F, so
+   an app that wrote 'Visit' would split the same thing across two words and
+   Client history would count them separately. */
+const ACT_TYPES = ['Call','F2F','Email','WhatsApp','Meeting','Sampling'];
+/* The three values the workbook actually uses. It previously offered
+   Partial/Received/Overdue, which appear on none of the 2,111 imported rows -
+   so every order logged in the app was recorded in a vocabulary the reports
+   did not share. */
+const PAY_STATUS = ['Pending','Received at Store','Received at HO'];
 
 /* ----------------------------------------------------------------- helpers */
 const $  = s => document.querySelector(s);
@@ -707,7 +714,11 @@ async function boot(authUser){
   go(S.view);
 
   // Heavier collections load after the first paint.
-  grab('orders').then(o => { S.orders = o;  if (S.view==='dash') go('dash'); });
+  grab('orders').then(o => {
+    S.orders = o;
+    badgeExceptions();
+    if (['dash','exception','winback','shared','data'].includes(S.view)) go(S.view);
+  });
   grab('targets').then(t => { S.targets = t; if (S.view==='dash') go('dash'); });
   grab('contacts').then(c => { S.contacts = c; S.contactsReady = true; });
 }
@@ -720,8 +731,12 @@ const VIEWS = {
   exception: { t:'Exceptions',       ico:'!', roles:['rep','manager','admin'] },
   winback:   { t:'Win back',         ico:'↺', roles:['rep','manager','admin'] },
   shared:    { t:'Shared accounts',  ico:'⇄', roles:['rep','manager','admin'] },
+  history:   { t:'Client history',   ico:'⏱', roles:['rep','manager','admin'] },
   data:      { t:'Data & imports',   ico:'⇓', roles:['rep','manager','admin'] },
-  incentive: { t:'Incentive',        ico:'₹', roles:['manager','admin'] },
+  // Admin only, deliberately. The calculation returns every person's pay in
+  // one payload and the callable refuses anyone else, so showing a manager a
+  // screen that can only fail would be worse than not showing it.
+  incentive: { t:'Incentive',        ico:'₹', roles:['admin'] },
   admin:     { t:'Admin',            ico:'⚙', roles:['admin'] }
 };
 
@@ -752,13 +767,23 @@ document.addEventListener('keydown', e => { if (e.key==='Escape') closeDrawer();
 
 function go(v){
   if (!VIEWS[v] || !VIEWS[v].roles.includes(S.me.role)) v = 'dash';
+  if (v !== 'history') S.histAcc = null;   // don't reopen one client later
   S.view = v;
   $('#vtitle').textContent = VIEWS[v].t;
   $('#nav').querySelectorAll('button').forEach(b =>
     b.classList.toggle('on', b.dataset.v === v));
-  $('#repChip').style.display = (v==='log'||v==='admin') ? 'none' : '';
-  $('#rangeChip').style.display = (v==='log'||v==='admin') ? 'none' : '';
-  ({ log: viewLog, dash: viewDash, admin: viewAdmin }[v] || viewSoon)();
+  // Pipeline, exceptions, win-back and shared accounts are "as things stand
+  // now", not "in a window", so they take the rep filter but not the range.
+  const NO_REP   = ['log','admin','data','incentive'];
+  const NO_RANGE = ['log','admin','data','incentive','pipeline','exception',
+                    'winback','shared','history'];
+  $('#repChip').style.display   = NO_REP.includes(v) ? 'none' : '';
+  $('#rangeChip').style.display = NO_RANGE.includes(v) ? 'none' : '';
+  ({ log: viewLog, dash: viewDash, admin: viewAdmin,
+     pipeline: viewPipeline, exception: viewExceptions, winback: viewWinback,
+     shared: viewShared, data: viewData, incentive: viewIncentive,
+     history: viewHistory
+   }[v] || viewSoon)();
   window.scrollTo(0,0);
 }
 
@@ -1022,8 +1047,11 @@ function stageExtra(){
 
   let h = '';
 
-  // C1 and C2 route to Anushikha unless someone types a reason.
-  if ((s===1 || s===2) && (!opp || opp.stage !== s)) {
+  // C1 (Follow-up) and C2F (Negotiation follow-up) route to Anushikha unless
+  // someone types a reason. C2 Negotiation does NOT: quoting and agreeing
+  // terms is the rep's own job, and handing it over mid-quote loses the
+  // thread. Only the chasing goes to her.  (Ayush, 30-Sep-26)
+  if ((s===1 || s===3) && (!opp || opp.stage !== s)) {
     const an = anushikha();
     h += `<div class="banner">Deals moving to ${ab(STAGES[s].k)} go to
       <b>${esc(an ? an.name : 'Anushikha')}</b> for follow-up. To hand it to
@@ -1146,6 +1174,10 @@ async function saveLog(){
     if (assignTo) {
       oppData.owner = assignTo;
       if (why) oppData.assignReason = why;
+      // Handing a deal over must not make it disappear from the person who
+      // sourced it. The owner changes - Anushikha is working it now - but
+      // handedFrom keeps it in the original rep's pipeline and exceptions.
+      if (assignTo !== S.me.id) oppData.handedFrom = S.me.id;
     }
     let oppId;
     if (opp) {
@@ -1349,7 +1381,7 @@ function viewDash() {
   });
 
   // open pipeline, weighted by the stage's own probability
-  const open = S.opps.filter(o => o.stage < CLOSED && uids.includes(o.owner));
+  const open = openDeals(uids);
   const openVal = open.reduce((n, o) => n + (o.expectedValue || 0), 0);
   const weighted = open.reduce((n, o) => n + (o.expectedValue || 0) * STAGES[o.stage].w, 0);
 
@@ -1716,6 +1748,1031 @@ function viewAdmin() {
   $('#arep').onchange = draw;
   $('#afy').onchange = draw;
   draw();
+}
+
+/* ======================================================== SHARED LIST BITS
+   Five of the six screens below are the same shape: filter a list, show it,
+   tap a row to open that account in Log activity - which is the only place a
+   deal can actually be moved. Written once here rather than five times.   */
+
+/* A deal counts as yours if you own it OR you handed it over. Anushikha owns
+   every C1/C2 handoff, so without the second clause a rep's own pipeline
+   emptied the moment they followed the process. */
+const oursDeal = (o, uids) =>
+  uids.includes(o.owner) || (o.handedFrom && uids.includes(o.handedFrom));
+const openDeals = uids => S.opps.filter(o => o.stage < CLOSED && oursDeal(o, uids));
+const accName   = id => (S.byId[id] || {}).name || 'Account';
+const daysIn    = o => { const d = parseDate(o.stageSince); return d ? dayspan(d, today()) : null; };
+const stageTag  = i => `<span class="tag" style="background:var(${STAGES[i].v})">${STAGES[i].k}</span>`;
+const TODAY     = () => iso(today());
+
+function openAccount(accId){ closeModal(); go('log'); setTimeout(() => pick(accId), 60); }
+function wireRows(root){
+  (root || $('#view')).querySelectorAll('[data-go]').forEach(el =>
+    el.onclick = () => openAccount(el.dataset.go));
+}
+
+/* A capped list. 469 open deals is more than anyone reads; the cap keeps the
+   first paint quick and the button is there when someone means it. */
+function capped(rows, render, cap){
+  cap = cap || 120;
+  const head = rows.slice(0, cap).map(render).join('');
+  return `<div class="list">${head}</div>` + (rows.length > cap
+    ? `<button class="btn sec" id="moreBtn" style="width:auto;padding:9px 14px;
+         margin-top:10px">Show the remaining ${rows.length - cap}</button>` : '');
+}
+function wireMore(rows, render, cap){
+  const b = $('#moreBtn');
+  if (!b) return;
+  b.onclick = () => {
+    b.previousElementSibling.innerHTML = rows.map(render).join('');
+    b.remove();
+    wireRows();
+  };
+}
+
+function dealRow(o){
+  const na  = o.nextActionDate ? iso(parseDate(o.nextActionDate)) : null;
+  const age = daysIn(o);
+  const late = na && na < TODAY();
+  const handed = o.handedFrom && o.owner !== o.handedFrom;
+  return `<div class="it" data-go="${o.accountId}">
+    ${stageTag(o.stage)}
+    <span class="nm">${esc(accName(o.accountId))}${handed
+      ? ` <span class="sm muted">→ ${esc(userName(o.owner))}</span>` : ''}</span>
+    <span class="meta">${inr(o.expectedValue || 0)}
+      · ${age == null ? '—' : age + 'd'}
+      · ${na ? (late ? `<span class="req">${esc(na)}</span>` : esc(na))
+             : `<span class="req">${ab('NA')}</span>`}</span>
+  </div>`;
+}
+
+/* ================================================================ PIPELINE
+   Every open deal, one screen. The dashboard funnel answers "how much is in
+   C2"; this answers "which ones, and which have gone quiet".            */
+function viewPipeline(){
+  const uids = repFilterIds();
+  const all  = openDeals(uids);
+  if (S.pipeStage == null) S.pipeStage = -1;
+  S.pipeSort = S.pipeSort || 'value';
+
+  const q = norm(S.pipeQ || '');
+  let rows = all;
+  if (S.pipeStage >= 0) rows = rows.filter(o => o.stage === S.pipeStage);
+  if (q) rows = rows.filter(o => norm(accName(o.accountId)).includes(q));
+
+  const sorters = {
+    value: (a,b) => (b.expectedValue||0) - (a.expectedValue||0),
+    age:   (a,b) => (daysIn(b)||0) - (daysIn(a)||0),
+    next:  (a,b) => String(a.nextActionDate || '9999-12-31')
+                      .localeCompare(String(b.nextActionDate || '9999-12-31'))
+  };
+  rows = rows.slice().sort(sorters[S.pipeSort]);
+
+  const val   = rows.reduce((n,o) => n + (o.expectedValue||0), 0);
+  const wtd   = rows.reduce((n,o) => n + (o.expectedValue||0) * STAGES[o.stage].w, 0);
+  const counts = i => all.filter(o => o.stage === i).length;
+
+  const chip = (k, lbl, on) =>
+    `<button class="chip${on ? ' on' : ''}" data-st="${k}">${lbl}</button>`;
+
+  $('#view').innerHTML = `
+    <div class="grid2" style="margin-bottom:14px">
+      ${tile('Open deals', String(rows.length), `of ${all.length} in view`)}
+      ${tile('Pipeline value', inr(val), 'sum of expected values')}
+      ${tile('Weighted', inr(wtd), 'by stage probability')}
+    </div>
+
+    <div class="card">
+      <h2>Filter</h2>
+      <div class="row" style="margin-bottom:10px">
+        <div style="flex:1 1 100%">
+          <input id="pq" class="fld" type="search" placeholder="Search account name"
+                 value="${esc(S.pipeQ || '')}" autocapitalize="off" spellcheck="false">
+        </div>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+        ${chip(-1, 'All ' + all.length, S.pipeStage === -1)}
+        ${[0,1,2,3,4].map(i => chip(i, STAGES[i].k + ' ' + counts(i),
+                                    S.pipeStage === i)).join('')}
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        <span class="sm muted" style="align-self:center;margin-right:2px">Sort</span>
+        <button class="chip${S.pipeSort==='value'?' on':''}" data-sort="value">Value</button>
+        <button class="chip${S.pipeSort==='age'?' on':''}" data-sort="age">Days in stage</button>
+        <button class="chip${S.pipeSort==='next'?' on':''}" data-sort="next">Next action</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Deals</h2>
+      ${rows.length ? capped(rows, dealRow)
+        : '<div class="empty">Nothing open matches that.</div>'}
+      <p class="hint" style="margin-top:10px">Value · days in the current stage ·
+        next action. A red date is overdue. Tap a row to log against it.</p>
+    </div>`;
+
+  wireRows(); wireMore(rows, dealRow);
+  $('#view').querySelectorAll('[data-st]').forEach(b => b.onclick = () => {
+    S.pipeStage = +b.dataset.st; viewPipeline();
+  });
+  $('#view').querySelectorAll('[data-sort]').forEach(b => b.onclick = () => {
+    S.pipeSort = b.dataset.sort; viewPipeline();
+  });
+  const pq = $('#pq');
+  pq.oninput = debounce(() => {
+    S.pipeQ = pq.value; const at = pq.selectionStart;
+    viewPipeline();
+    const n = $('#pq'); n.focus(); n.setSelectionRange(at, at);
+  }, 220);
+}
+
+let _t;
+function debounce(fn, ms){ return (...a) => { clearTimeout(_t); _t = setTimeout(()=>fn(...a), ms); }; }
+
+/* ============================================================== EXCEPTIONS
+   The screen that earns its keep: everything that is wrong right now, with
+   the worst first. Each check is one question a manager would otherwise ask
+   in the morning meeting.
+
+   History is exempt from the paperwork checks. 1,852 of the 2,111 imported
+   orders have no invoice number because the workbook never carried one -
+   flagging those would bury the 248 from this year that are genuinely
+   missing and fixable.                                                    */
+
+const SLA = [3, 5, 5, 4, 7];        // days per stage, matches DEFAULT_CONFIG
+const FY_START = () => {
+  const t = today();
+  return (t.getMonth() >= 3 ? t.getFullYear() : t.getFullYear()-1) + '-04-01';
+};
+
+function exceptionSets(uids){
+  const open = openDeals(uids);
+  const td   = TODAY();
+  const fy   = FY_START();
+  const mine = o => !o.bookedBy || uids.includes(o.bookedBy);
+  const fyOrders = S.orders.filter(o => o.orderDate >= fy && mine(o));
+
+  // Split on purpose. A flat "past its SLA" check flagged 456 of 469 open
+  // deals, because the workbook's stage dates go back to 2023 - a list that
+  // long is a list nobody opens. Past the SLA but touched this quarter is a
+  // nudge; open for over a year is a different job, done in one sitting.
+  const stalled = open.filter(o => {
+    const d = daysIn(o);
+    return d != null && d > (SLA[o.stage] || 7) && d <= 120;
+  }).sort((a,b) => (daysIn(b)||0) - (daysIn(a)||0));
+
+  const ancient = open.filter(o => {
+    const d = daysIn(o);
+    return d != null && d > 365;
+  }).sort((a,b) => (b.expectedValue||0) - (a.expectedValue||0));
+
+  const noNext = open.filter(o => !o.nextActionDate)
+    .sort((a,b) => (b.expectedValue||0) - (a.expectedValue||0));
+
+  const overdue = open.filter(o => o.nextActionDate
+      && iso(parseDate(o.nextActionDate)) < td)
+    .sort((a,b) => String(a.nextActionDate).localeCompare(String(b.nextActionDate)));
+
+  const noInvoice = fyOrders.filter(o => !o.invoiceNumber)
+    .sort((a,b) => (b.value||0) - (a.value||0));
+  const noStore   = fyOrders.filter(o => !o.store)
+    .sort((a,b) => (b.value||0) - (a.value||0));
+  const noRep     = S.orders.filter(o => o.orderDate >= fy && !o.bookedBy)
+    .sort((a,b) => (b.value||0) - (a.value||0));
+
+  // A confirmed deal is a promise with a date on it. Past the date and still
+  // not closed is the single most recoverable number on this screen.
+  const slipped = open.filter(o => o.stage === 4 && o.expectedOrderDate
+      && iso(parseDate(o.expectedOrderDate)) < td)
+    .sort((a,b) => (b.expectedValue||0) - (a.expectedValue||0));
+
+  return [
+    { k:'slipped', t:'Confirmed but not closed', rows:slipped, kind:'deal',
+      why:'C3 with an expected order date that has passed. Either the order '
+        + 'was raised and not logged, or it is slipping.' },
+    { k:'overdue', t:'Next action overdue', rows:overdue, kind:'deal',
+      why:'The date the rep set for themselves has gone by.' },
+    { k:'stalled', t:'Past its stage SLA', rows:stalled, kind:'deal',
+      why:'Moved within the last four months but has now sat too long: '
+        + SLA.slice(0,5).map((d,i) => STAGES[i].k + ' ' + d + 'd').join(', ') + '.' },
+    { k:'ancient', t:'Open for over a year', rows:ancient, kind:'deal',
+      why:'Has not moved stage in 365 days. Most of these came in from the '
+        + 'workbook and should be cancelled with a reason or genuinely revived '
+        + '— either way they are inflating the pipeline.' },
+    { k:'noNext', t:'No next action at all', rows:noNext, kind:'deal',
+      why:'An open deal with nothing scheduled is a deal nobody is working.' },
+    { k:'noInvoice', t:'This year’s orders with no invoice number',
+      rows:noInvoice, kind:'order',
+      why:'Finance cannot match the payment without it. History is excluded '
+        + '— the workbook never carried invoice numbers.' },
+    { k:'noStore', t:'This year’s orders with no store', rows:noStore, kind:'order',
+      why:'Which kitchen punched it. Needed to settle the store’s own books.' },
+    { k:'noRep', t:'Orders with no rep', rows:noRep, kind:'order',
+      why:'Counts toward nobody’s target and nobody’s incentive.' }
+  ];
+}
+
+function orderRow(o){
+  return `<div class="it" data-go="${o.accountId}">
+    <span class="nm">${esc(accName(o.accountId))}</span>
+    <span class="meta">${inr(o.value || 0)} · ${esc(String(o.orderDate||'').slice(0,10))}
+      · ${o.bookedBy ? esc(userName(o.bookedBy)) : '<span class="req">no rep</span>'}</span>
+  </div>`;
+}
+
+/* The drawer badge, so the number is visible without opening the screen. */
+function badgeExceptions(){
+  if (!S.me || !S.orders.length) return;
+  try {
+    setNavCount('exception',
+      exceptionSets(repFilterIds()).reduce((n,s) => n + s.rows.length, 0));
+  } catch (e) { /* a badge is never worth breaking boot over */ }
+}
+
+function viewExceptions(){
+  const uids = repFilterIds();
+  if (!S.orders.length) {
+    $('#view').innerHTML = `<div class="card"><div class="empty">
+      <span class="spin"></span><br><br>Loading orders…</div></div>`;
+    return;
+  }
+  const sets  = exceptionSets(uids);
+  const total = sets.reduce((n,s) => n + s.rows.length, 0);
+  setNavCount('exception', total);
+
+  const money = s => s.rows.reduce((n,r) =>
+    n + (s.kind === 'deal' ? (r.expectedValue||0) : (r.value||0)), 0);
+
+  // Deals only. Adding an order's value to a deal's expected value would be
+  // adding money already booked to money only hoped for.
+  const atRisk = sets.filter(s => s.kind === 'deal')
+    .reduce((n,s) => n + money(s), 0);
+
+  $('#view').innerHTML = `
+    <div class="grid2" style="margin-bottom:14px">
+      ${tile('Things to fix', String(total), 'across ' + sets.filter(s=>s.rows.length).length
+             + ' checks')}
+      ${tile('Open value affected', inr(atRisk),
+             'deals flagged above, some in more than one check')}
+    </div>
+    ${sets.map(s => `
+      <div class="card">
+        <h2 style="display:flex;align-items:center;gap:8px">
+          <span>${esc(s.t)}</span>
+          <span class="tag" style="margin-left:auto;background:var(${
+            s.rows.length ? '--bad' : '--ok'})">${s.rows.length}</span>
+        </h2>
+        ${s.rows.length ? `
+          <p class="sm muted" style="margin:-4px 0 10px">${esc(s.why)}
+            · <b>${inr(money(s))}</b></p>
+          ${capped(s.rows, s.kind === 'deal' ? dealRow : orderRow, 25)}`
+        : `<p class="sm muted" style="margin:-4px 0 0">Clear. ${esc(s.why)}</p>`}
+      </div>`).join('')}`;
+
+  wireRows();
+  // Each check has its own "show the rest". The cards are rendered in the
+  // same order as `sets`, so the card index IS the set index.
+  $('#view').querySelectorAll('.card').forEach((card, i) => {
+    const b = card.querySelector('#moreBtn');
+    const set = sets[i];
+    if (!b || !set) return;
+    b.removeAttribute('id');
+    b.onclick = () => {
+      b.previousElementSibling.innerHTML =
+        set.rows.map(set.kind === 'deal' ? dealRow : orderRow).join('');
+      b.remove(); wireRows();
+    };
+  });
+}
+
+/* ================================================================ WIN BACK
+   Accounts that bought before and have not bought this financial year, worst
+   loss first. The dashboard says SSSG is negative; this is the list that
+   makes it actionable.                                                    */
+function viewWinback(){
+  const uids = repFilterIds();
+  if (!S.orders.length) {
+    $('#view').innerHTML = `<div class="card"><div class="empty">
+      <span class="spin"></span><br><br>Loading orders…</div></div>`;
+    return;
+  }
+  const fy = FY_START();
+  const last = {}, prior = {}, thisFy = {};
+  S.orders.forEach(o => {
+    const d = String(o.orderDate || '').slice(0,10);
+    if (!d) return;
+    if (!last[o.accountId] || d > last[o.accountId]) last[o.accountId] = d;
+    if (d >= fy) thisFy[o.accountId] = (thisFy[o.accountId]||0) + (o.value||0);
+    else prior[o.accountId] = (prior[o.accountId]||0) + (o.value||0);
+  });
+
+  S.wbMonths = S.wbMonths || 0;
+  const cutoff = S.wbMonths
+    ? iso(new Date(today().getFullYear(), today().getMonth() - S.wbMonths, 1)) : null;
+
+  let rows = Object.keys(prior)
+    .filter(id => !thisFy[id])
+    .filter(id => { const a = S.byId[id]; return a && uids.includes(a.owner); })
+    .filter(id => !cutoff || last[id] < cutoff)
+    .map(id => ({ id, lost: prior[id], last: last[id],
+                  owner: (S.byId[id]||{}).owner }))
+    .sort((a,b) => b.lost - a.lost);
+
+  const lostVal = rows.reduce((n,r) => n + r.lost, 0);
+  const openIds = new Set(openDeals(uids).map(o => o.accountId));
+  const untouched = rows.filter(r => !openIds.has(r.id));
+
+  const row = r => `<div class="it" data-go="${r.id}">
+    <span class="nm">${esc(accName(r.id))}</span>
+    <span class="meta">${inr(r.lost)} · last ${esc(r.last)}
+      ${openIds.has(r.id) ? '· <span style="color:var(--c1)">in pipeline</span>' : ''}</span>
+  </div>`;
+
+  const chip = (m, lbl) => `<button class="chip${S.wbMonths===m?' on':''}"
+    data-wb="${m}">${lbl}</button>`;
+
+  $('#view').innerHTML = `
+    <div class="grid2" style="margin-bottom:14px">
+      ${tile('Dormant accounts', String(rows.length),
+             'bought before, nothing since 1 April')}
+      ${tile('Revenue not repeating', inr(lostVal), 'what they used to spend')}
+      ${tile('Nobody is on', String(untouched.length),
+             'no open deal against them', untouched.length ? '--bad' : '--ok')}
+    </div>
+
+    <div class="card">
+      <h2>Quiet for at least</h2>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        ${chip(0,'Any')}${chip(3,'3 months')}${chip(6,'6 months')}${chip(12,'12 months')}
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Worth the call, biggest first</h2>
+      ${rows.length ? capped(rows, row)
+        : '<div class="empty">Nobody has gone quiet. Unlikely, but good.</div>'}
+      <p class="hint" style="margin-top:10px">Value is what the account spent
+        before this financial year. Tap to open it and log a call.</p>
+    </div>`;
+
+  wireRows(); wireMore(rows, row);
+  $('#view').querySelectorAll('[data-wb]').forEach(b => b.onclick = () => {
+    S.wbMonths = +b.dataset.wb; viewWinback();
+  });
+}
+
+/* ========================================================= SHARED ACCOUNTS
+   Two people on one account is normal here - Anushikha generates the lead
+   centrally and a city rep closes it. What is not normal is the order being
+   booked by someone who is not on the account at all, because that is where
+   an incentive argument starts.                                          */
+function viewShared(){
+  const uids = repFilterIds();
+  if (!S.orders.length) {
+    $('#view').innerHTML = `<div class="card"><div class="empty">
+      <span class="spin"></span><br><br>Loading orders…</div></div>`;
+    return;
+  }
+  const fy = FY_START();
+
+  const shared = S.accounts
+    .filter(a => (a.team || []).length > 1)
+    .filter(a => (a.team || []).some(t => uids.includes(t)))
+    .sort((a,b) => (b.lifetimeValue||0) - (a.lifetimeValue||0));
+
+  // an order booked by someone who is neither owner nor on the team
+  const cross = S.orders.filter(o => {
+    if (!o.bookedBy || o.orderDate < fy) return false;
+    const a = S.byId[o.accountId];
+    if (!a) return false;
+    const team = a.team || [];
+    return a.owner !== o.bookedBy && !team.includes(o.bookedBy);
+  }).sort((a,b) => (b.value||0) - (a.value||0));
+
+  const sharedRow = a => `<div class="it" data-go="${a.id}">
+    <span class="nm">${esc(a.name)}</span>
+    <span class="meta">${esc((a.team||[]).map(userName).join(' + '))}
+      · ${inr(a.lifetimeValue || 0)}</span>
+  </div>`;
+  const crossRow = o => {
+    const a = S.byId[o.accountId] || {};
+    return `<div class="it" data-go="${o.accountId}">
+      <span class="nm">${esc(a.name || 'Account')}</span>
+      <span class="meta">${inr(o.value||0)} · booked by
+        <b>${esc(userName(o.bookedBy))}</b>, owned by
+        ${esc(a.owner ? userName(a.owner) : '—')}</span>
+    </div>`;
+  };
+
+  $('#view').innerHTML = `
+    <div class="grid2" style="margin-bottom:14px">
+      ${tile('Shared accounts', String(shared.length), 'more than one person on them')}
+      ${tile('Booked off-team', String(cross.length),
+             inr(cross.reduce((n,o)=>n+(o.value||0),0)) + ' this year',
+             cross.length ? '--warn' : '--ok')}
+    </div>
+
+    <div class="card">
+      <h2>Booked by someone not on the account</h2>
+      ${cross.length ? capped(cross, crossRow, 40)
+        : '<p class="sm muted" style="margin:-4px 0 0">None. Every order this '
+          + 'year was booked by the owner or someone on the team.</p>'}
+      ${cross.length ? `<p class="hint" style="margin-top:10px">Not wrong in
+        itself — anyone may log an order. It matters because the credit
+        follows <b>bookedBy</b>, not the owner. Settle it before the month
+        closes.</p>` : ''}
+    </div>
+
+    <div class="card">
+      <h2>Accounts with a team</h2>
+      ${shared.length ? capped(shared, sharedRow)
+        : '<div class="empty">No shared accounts in view.</div>'}
+    </div>`;
+
+  wireRows();
+}
+
+/* ========================================================= DATA & IMPORTS
+   What came out of the workbook, what is missing, and a way to get any of it
+   back out as a CSV. The import report is written by load_seed.js, so this
+   screen tells you when the data was last refreshed rather than leaving you
+   to guess from the numbers.                                              */
+
+function csv(rows, cols){
+  const q = v => {
+    const s = v == null ? '' : String(v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+  };
+  return cols.map(c => q(c.t)).join(',') + '\n'
+    + rows.map(r => cols.map(c => q(c.f(r))).join(',')).join('\n');
+}
+function download(name, text){
+  const b = new Blob([text], { type:'text/csv;charset=utf-8' });
+  const u = URL.createObjectURL(b);
+  const a = document.createElement('a');
+  a.href = u; a.download = name; document.body.appendChild(a); a.click();
+  a.remove(); setTimeout(() => URL.revokeObjectURL(u), 4000);
+}
+
+function viewData(){
+  const ready = S.orders.length > 0;
+  const counts = [
+    ['Accounts', S.accounts.length], ['Contacts', S.contacts.length],
+    ['Opportunities', S.opps.length], ['Orders', S.orders.length],
+    ['Targets', S.targets.length], ['People', S.users.length]
+  ];
+
+  const noSpoc = S.accounts.filter(a =>
+    !S.contacts.some(c => c.accountId === a.id)).length;
+  const dupish = {};
+  S.accounts.forEach(a => {
+    const k = (a.nameNormalised || norm(a.name)).slice(0, 14);
+    (dupish[k] = dupish[k] || []).push(a);
+  });
+  const dups = Object.values(dupish).filter(g => g.length > 1)
+    .sort((a,b) => b.length - a.length);
+
+  $('#view').innerHTML = `
+    <div class="card">
+      <h2>What is loaded</h2>
+      <div class="grid2">
+        ${counts.map(([k,v]) => tile(k, v.toLocaleString('en-IN'),
+          v ? '' : 'not loaded yet')).join('')}
+      </div>
+      <p class="hint" style="margin-top:12px" id="impLine">Checking when this
+        was last refreshed…</p>
+    </div>
+
+    <div class="card">
+      <h2>Known gaps</h2>
+      <div class="list">
+        <div class="it" style="cursor:default">
+          <span class="nm">Accounts with no named contact</span>
+          <span class="meta">${S.contactsReady ? noSpoc : 'loading…'}</span></div>
+        <div class="it" style="cursor:default">
+          <span class="nm">Names that look like duplicates</span>
+          <span class="meta">${dups.length} groups</span></div>
+        <div class="it" style="cursor:default">
+          <span class="nm">Orders with no rep</span>
+          <span class="meta">${ready
+            ? S.orders.filter(o=>!o.bookedBy).length : 'loading…'}</span></div>
+      </div>
+      <p class="hint" style="margin-top:10px">The workbook carried no ${ab('SPOC')}
+        number on any row, so contacts come from whatever the remarks column
+        held. Duplicates are matched on the first 14 characters of the
+        normalised name — a hint, not a verdict.</p>
+      ${dups.length ? `<button class="btn sec" id="dupBtn"
+        style="width:auto;padding:9px 14px">See the ${dups.length} groups</button>` : ''}
+    </div>
+
+    <div class="card">
+      <h2>Take it out as a CSV</h2>
+      <p class="sm muted" style="margin:-4px 0 10px">Opens in Excel. Exactly
+        what is on screen for the current rep filter, not a fresh query.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">
+        <button class="chip" data-ex="orders">Orders</button>
+        <button class="chip" data-ex="pipeline">Open pipeline</button>
+        <button class="chip" data-ex="accounts">Accounts</button>
+        <button class="chip" data-ex="targets">Targets</button>
+      </div>
+    </div>`;
+
+  getDoc(doc(db, 'meta', 'import')).then(s => {
+    const el = $('#impLine'); if (!el) return;
+    if (!s.exists()) { el.textContent = 'No import report stored yet.'; return; }
+    const d = s.data();
+    const at = d.loadedAt && d.loadedAt.toDate ? d.loadedAt.toDate() : null;
+    el.innerHTML = 'Last loaded from the workbook '
+      + (at ? esc(at.toLocaleString('en-IN')) : 'at an unknown time')
+      + (d.sourceFile ? ' · ' + esc(d.sourceFile) : '')
+      + (d.rowsRead ? ' · ' + d.rowsRead.toLocaleString('en-IN') + ' rows read' : '');
+  }).catch(() => {
+    const el = $('#impLine'); if (el) el.textContent = 'Could not read the import report.';
+  });
+
+  const db2 = $('#dupBtn');
+  if (db2) db2.onclick = () => modal('Possible duplicates',
+    `<div class="list">` + dups.slice(0, 40).map(g =>
+      `<div class="it" style="cursor:default;flex-direction:column;
+            align-items:flex-start;gap:2px">
+         ${g.map(a => `<span class="sm">${esc(a.name)}
+           <span class="muted">· ${inr(a.lifetimeValue||0)}</span></span>`).join('')}
+       </div>`).join('') + `</div>`, null);
+
+  const uids = repFilterIds();
+  const EX = {
+    orders: () => ['orders.csv', csv(
+      S.orders.filter(o => !o.bookedBy || uids.includes(o.bookedBy)), [
+        { t:'Date', f:o => String(o.orderDate||'').slice(0,10) },
+        { t:'Account', f:o => accName(o.accountId) },
+        { t:'Value', f:o => o.value || 0 },
+        { t:'Rep', f:o => o.bookedBy ? userName(o.bookedBy) : '' },
+        { t:'Store', f:o => o.store || '' },
+        { t:'Invoice', f:o => o.invoiceNumber || '' },
+        { t:'Payment', f:o => o.paymentStatus || '' }])],
+    pipeline: () => ['pipeline.csv', csv(openDeals(uids), [
+        { t:'Account', f:o => accName(o.accountId) },
+        { t:'Stage', f:o => STAGES[o.stage].k },
+        { t:'Stage name', f:o => STAGES[o.stage].n },
+        { t:'Expected value', f:o => o.expectedValue || 0 },
+        { t:'Days in stage', f:o => daysIn(o) },
+        { t:'Next action', f:o => o.nextActionDate
+            ? iso(parseDate(o.nextActionDate)) : '' },
+        { t:'Owner', f:o => userName(o.owner) }])],
+    accounts: () => ['accounts.csv', csv(
+      S.accounts.filter(a => uids.includes(a.owner)), [
+        { t:'Account', f:a => a.name },
+        { t:'Owner', f:a => userName(a.owner) },
+        { t:'Region', f:a => a.region || '' },
+        { t:'Type', f:a => a.type || '' },
+        { t:'Class', f:a => a.clientClass || '' },
+        { t:'Lifetime value', f:a => a.lifetimeValue || 0 },
+        { t:'First order', f:a => String(a.firstOrderDate||'').slice(0,10) }])],
+    targets: () => ['targets.csv', csv(
+      S.targets.filter(t => t.scope !== 'rep' || uids.includes(t.userId)), [
+        { t:'Month', f:t => t.month },
+        { t:'Scope', f:t => t.scope },
+        { t:'Who', f:t => t.userId ? userName(t.userId) : (t.accountName || '') },
+        { t:'Bucket', f:t => t.bucket },
+        { t:'Amount', f:t => t.amount || 0 }])]
+  };
+  $('#view').querySelectorAll('[data-ex]').forEach(b => b.onclick = () => {
+    const [name, text] = EX[b.dataset.ex]();
+    download(name, text);
+  });
+}
+
+/* =============================================================== INCENTIVE
+   The arithmetic lives in the calculateIncentive Cloud Function, not here,
+   so that one set of rules serves the screen, the monthly mail and any later
+   payroll export. This screen shows the result and nothing more.
+
+   New : revenue x 1.7% x min(achievement, 120%), only at 80% or above
+   Old : revenue x 1.0%, only at 99% or above
+   MSN : revenue x 0.3%, flat, no gate
+   There is no overall gate - Ayush, 30-Sep-26.                            */
+function viewIncentive(){
+  const months = [];
+  for (let i = 0; i < 12; i++) {
+    const d = new Date(today().getFullYear(), today().getMonth() - i, 1);
+    months.push(iso(d).slice(0,7));
+  }
+  S.incMonth = S.incMonth || months[0];
+
+  $('#view').innerHTML = `
+    <div class="card">
+      <h2>Work out the incentive</h2>
+      <div class="row">
+        <div><label for="im">Month</label>
+          <select id="im" class="fld">${months.map(m =>
+            `<option value="${m}"${m===S.incMonth?' selected':''}>${monthLabel(m)}</option>`
+          ).join('')}</select></div>
+        <div style="flex:0 0 auto"><button class="btn" id="irun"
+          style="width:auto;padding:11px 18px">Calculate</button></div>
+      </div>
+      <p class="hint" style="margin-top:10px">New ${'×'} 1.7% banded to 120%,
+        gated at 80%. Old ${'×'} 1.0%, gated at 99%. MSN ${'×'} 0.3% flat.
+        Each bucket stands on its own target; there is no overall gate.</p>
+      <p id="imsg" class="msg"></p>
+    </div>
+    <div id="ibody"></div>`;
+
+  $('#im').onchange = () => { S.incMonth = $('#im').value; };
+  $('#irun').onclick = async () => {
+    const b = $('#irun'); busy(b, 'Calculating…');
+    $('#ibody').innerHTML = '';
+    msg('imsg', '');
+    try {
+      const r = await call('calculateIncentive')({ month: S.incMonth });
+      paintIncentive(r.data);
+    } catch (e) {
+      msg('imsg', /permission/i.test(e.message || '')
+        ? 'Only the administrator can run this. The figures cover everyone’s '
+          + 'pay, so the calculation is not exposed to the team.'
+        : friendly(e, 'Could not calculate.'));
+    } finally { done(b); }
+  };
+}
+
+function paintIncentive(d){
+  const pct = x => (x == null ? '—' : (x*100).toFixed(0) + '%');
+  const gate = (ach, at) => ach >= at ? '--ok' : '--bad';
+
+  const repCard = r => `
+    <div class="card">
+      <h2 style="display:flex;gap:8px;align-items:center">
+        <span>${esc(r.name)}</span>
+        <span style="margin-left:auto;font-size:16px;color:var(--ink)">
+          <b>${inr(r.payout)}</b></span>
+      </h2>
+      <div class="list">
+        <div class="it" style="cursor:default">
+          <span class="nm">New clients</span>
+          <span class="meta">${inr(r.newRev)} of ${inr(r.newTarget)}
+            · <b style="color:var(${gate(r.newAch, d.config.floor)})">${pct(r.newAch)}</b>
+            · ${inr(r.newPay)}</span></div>
+        <div class="it" style="cursor:default">
+          <span class="nm">Old clients</span>
+          <span class="meta">${inr(r.oldRev)} of ${inr(r.oldTarget)}
+            · <b style="color:var(${gate(r.oldAch, d.config.gateOld)})">${pct(r.oldAch)}</b>
+            · ${inr(r.oldPay)}</span></div>
+        <div class="it" style="cursor:default">
+          <span class="nm">MSN</span>
+          <span class="meta">${inr(r.msnRev)} · flat
+            ${(d.config.rateMsn*100).toFixed(1)}% · ${inr(r.msnPay)}</span></div>
+      </div>
+      ${r.newPay === 0 && r.newRev > 0 ? `<p class="sm" style="margin:10px 0 0;
+        color:var(--warn)">New-client payout is nil: ${pct(r.newAch)} is below the
+        ${pct(d.config.floor)} gate.</p>` : ''}
+      ${r.oldPay === 0 && r.oldRev > 0 ? `<p class="sm" style="margin:6px 0 0;
+        color:var(--warn)">Old-client payout is nil: ${pct(r.oldAch)} is below the
+        ${pct(d.config.gateOld)} gate.</p>` : ''}
+    </div>`;
+
+  $('#ibody').innerHTML = `
+    <div class="grid2" style="margin-bottom:14px">
+      ${tile('Total scheme cost', inr(d.totalSchemeCost),
+             monthLabel(d.month) + ' · ' + d.rows.length + ' people')}
+      ${tile('Team payout', inr(d.team.payout), 'before the head’s share')}
+      ${tile('Head’s share', inr(d.headPayout),
+             (d.config.headShare*100).toFixed(0) + '% of the collective result')}
+      ${tile('Revenue in scope', inr(d.team.newRev + d.team.oldRev + d.team.msnRev),
+             inr(d.team.newRev) + ' new · ' + inr(d.team.oldRev) + ' old')}
+    </div>
+    ${d.rows.map(repCard).join('')}
+    <div class="card">
+      <h2>The collective, for the head’s override</h2>
+      <p class="sm muted" style="margin:-4px 0 10px">Same three buckets, applied
+        once to the team total rather than summing what each rep earned, then
+        halved.</p>
+      <div class="list">
+        <div class="it" style="cursor:default"><span class="nm">New</span>
+          <span class="meta">${pct(d.collective.newAch)} · ${inr(d.collective.newPay)}</span></div>
+        <div class="it" style="cursor:default"><span class="nm">Old</span>
+          <span class="meta">${pct(d.collective.oldAch)} · ${inr(d.collective.oldPay)}</span></div>
+        <div class="it" style="cursor:default"><span class="nm">MSN</span>
+          <span class="meta">${inr(d.collective.msnPay)}</span></div>
+        <div class="it" style="cursor:default"><span class="nm">Collective result</span>
+          <span class="meta"><b>${inr(d.collective.result)}</b>
+            → ${inr(d.headPayout)}</span></div>
+      </div>
+    </div>
+    ${d.accountTargets && d.accountTargets.length ? `
+    <div class="card">
+      <h2>Named-account targets, reported only</h2>
+      <p class="sm muted" style="margin:-4px 0 10px">These sit on top of the
+        monthly numbers in the sheet’s Total Target row. Nobody is paid on
+        them, and they are kept out of every achievement above.</p>
+      <div class="list">${d.accountTargets.map(a =>
+        `<div class="it" style="cursor:default"><span class="nm">${esc(a.account||'—')}</span>
+         <span class="meta">${inr(a.amount)}</span></div>`).join('')}</div>
+    </div>` : ''}
+    <p class="sm muted">Calculated ${esc(new Date(d.calculatedAt).toLocaleString('en-IN'))}
+      and stored, so the figure does not move if an order is edited afterwards.</p>`;
+}
+
+/* ========================================================= CLIENT HISTORY
+   Everything that has happened to one client, in order: how often they were
+   contacted, every time the deal moved from one stage to another, and every
+   time it converted into an order.
+
+   Activities and stage history are 7,000 documents between them and nothing
+   else in the app needs either, so they are fetched the first time this
+   screen is opened rather than at sign-in. After that they stay in memory.
+
+   Two rows are deliberately ignored. A stage row with no fromStage is a deal
+   being created, not moving - the first import wrote 2,012 of those, dated
+   the day of the load. And history that predates the current FY still shows,
+   because "when did this client last actually move" is the question the
+   workbook could never answer.                                            */
+
+let histLoading = null;
+function loadHistory(){
+  if (histLoading) return histLoading;
+  histLoading = Promise.all([grab('activities'), grab('stageHistory')])
+    .then(([a, s]) => {
+      S.acts = a;
+      S.hist = s.filter(r => r.fromStage != null && r.fromStage !== r.toStage);
+      S.histReady = true;
+    });
+  return histLoading;
+}
+
+const monthOf = v => { const d = parseDate(v); return d ? iso(d).slice(0, 7) : null; };
+
+/* Everything known about one account, keyed by month. */
+function clientHistory(accId){
+  const oppIds = new Set(S.opps.filter(o => o.accountId === accId).map(o => o.id));
+  const acts = (S.acts || []).filter(a => a.accountId === accId);
+  const moves = (S.hist || []).filter(h => oppIds.has(h.opportunityId));
+  const ords = S.orders.filter(o => o.accountId === accId);
+
+  const months = {};
+  const bump = (mk, k, n) => {
+    if (!mk) return;
+    months[mk] = months[mk] || { mk, contacts:0, moves:0, orders:0, value:0, won:0 };
+    months[mk][k] += (n == null ? 1 : n);
+  };
+  acts.forEach(a => bump(monthOf(a.loggedAt), 'contacts'));
+  moves.forEach(h => { bump(monthOf(h.changedAt), 'moves');
+                       if (h.toStage === CLOSED) bump(monthOf(h.changedAt), 'won'); });
+  ords.forEach(o => { const mk = monthOf(o.orderDate);
+                      bump(mk, 'orders'); bump(mk, 'value', o.value || 0); });
+
+  return {
+    acts, moves, ords,
+    rows: Object.values(months).sort((a,b) => b.mk.localeCompare(a.mk)),
+    // "converted" = the deal reached C4. An account can convert more than
+    // once: it goes back to C0 for the next requirement and comes round again.
+    conversions: moves.filter(h => h.toStage === CLOSED).length,
+    lastContact: acts.reduce((m,a) => {
+      const d = monthOf(a.loggedAt) ? iso(parseDate(a.loggedAt)) : null;
+      return d && (!m || d > m) ? d : m; }, null)
+  };
+}
+
+function viewHistory(){
+  const uids = repFilterIds();
+
+  if (!S.orders.length || !S.histReady) {
+    $('#view').innerHTML = `<div class="card"><div class="empty">
+      <span class="spin"></span><br><br>Loading the history…<br>
+      <span class="sm">Activities and stage changes are only fetched for this
+      screen, so the first open takes a moment.</span></div></div>`;
+    loadHistory().then(() => { if (S.view === 'history') viewHistory(); })
+      .catch(e => { $('#view').innerHTML =
+        `<div class="card"><h2>Could not load</h2><p>${esc(e.message)}</p></div>`; });
+    return;
+  }
+
+  if (S.histAcc) return historyOne(S.histAcc);
+
+  /* ---- the list: every client, with the three counts ------------------- */
+  const actBy = {}, ordBy = {}, valBy = {}, lastBy = {};
+  (S.acts || []).forEach(a => {
+    actBy[a.accountId] = (actBy[a.accountId]||0) + 1;
+    const d = a.loggedAt ? String(a.loggedAt).slice(0,10) : null;
+    if (d && (!lastBy[a.accountId] || d > lastBy[a.accountId])) lastBy[a.accountId] = d;
+  });
+  S.orders.forEach(o => {
+    ordBy[o.accountId] = (ordBy[o.accountId]||0) + 1;
+    valBy[o.accountId] = (valBy[o.accountId]||0) + (o.value||0);
+  });
+  const oppAcc = {}; S.opps.forEach(o => oppAcc[o.id] = o.accountId);
+  const mvBy = {};
+  (S.hist || []).forEach(h => {
+    const a = oppAcc[h.opportunityId]; if (!a) return;
+    mvBy[a] = (mvBy[a]||0) + 1;
+  });
+
+  S.hSort = S.hSort || 'contacts';
+  const q = norm(S.hQ || '');
+  let rows = S.accounts
+    .filter(a => uids.includes(a.owner))
+    .filter(a => !q || norm(a.name).includes(q))
+    .map(a => ({ id:a.id, name:a.name, owner:a.owner,
+                 contacts: actBy[a.id]||0, moves: mvBy[a.id]||0,
+                 orders: ordBy[a.id]||0, value: valBy[a.id]||0,
+                 last: lastBy[a.id] || null }))
+    .filter(r => r.contacts || r.orders || r.moves);
+
+  const sorters = {
+    contacts: (a,b) => b.contacts - a.contacts,
+    orders:   (a,b) => b.orders - a.orders,
+    value:    (a,b) => b.value - a.value,
+    last:     (a,b) => String(b.last||'').localeCompare(String(a.last||''))
+  };
+  rows = rows.sort(sorters[S.hSort]);
+
+  const row = r => `<div class="it" data-hist="${r.id}">
+    <span class="nm">${esc(r.name)}</span>
+    <span class="meta">${r.contacts} contact${r.contacts===1?'':'s'}
+      · ${r.orders} order${r.orders===1?'':'s'} · ${inr(r.value)}
+      · ${r.last ? esc(r.last) : '<span class="req">never</span>'}</span>
+  </div>`;
+
+  const sc = (k, lbl) => `<button class="chip${S.hSort===k?' on':''}"
+    data-hsort="${k}">${lbl}</button>`;
+
+  $('#view').innerHTML = `
+    <div class="grid2" style="margin-bottom:14px">
+      ${tile('Clients with history', rows.length.toLocaleString('en-IN'),
+             'contacted, moved or billed at least once')}
+      ${tile('Contacts logged', (S.acts||[]).length.toLocaleString('en-IN'),
+             'calls and visits, all time')}
+      ${tile('Stage changes', (S.hist||[]).length.toLocaleString('en-IN'),
+             'real moves, excluding deal creation')}
+    </div>
+
+    <div class="card">
+      <h2>Find a client</h2>
+      <input id="hq" class="fld" type="search" placeholder="Search client name"
+             value="${esc(S.hQ || '')}" autocapitalize="off" spellcheck="false">
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px">
+        <span class="sm muted" style="align-self:center;margin-right:2px">Sort</span>
+        ${sc('contacts','Most contacted')}${sc('orders','Most orders')}
+        ${sc('value','Biggest')}${sc('last','Most recent')}
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>${rows.length.toLocaleString('en-IN')} clients</h2>
+      ${rows.length ? capped(rows, row)
+        : '<div class="empty">No client matches that.</div>'}
+      <p class="hint" style="margin-top:10px">Tap a client for its month-by-month
+        history. Contacts are logged calls and visits; orders are what was
+        actually billed.</p>
+      <button class="btn sec" id="hcsv" style="width:auto;padding:9px 14px;
+        margin-top:10px">Download this list</button>
+    </div>`;
+
+  wireHist(); wireMore(rows, row);
+  $('#view').querySelectorAll('[data-hsort]').forEach(b => b.onclick = () => {
+    S.hSort = b.dataset.hsort; viewHistory();
+  });
+  const hq = $('#hq');
+  hq.oninput = debounce(() => {
+    S.hQ = hq.value; const at = hq.selectionStart;
+    viewHistory();
+    const n = $('#hq'); if (n) { n.focus(); n.setSelectionRange(at, at); }
+  }, 220);
+  $('#hcsv').onclick = () => download('client-history.csv', csv(rows, [
+    { t:'Client', f:r => r.name },
+    { t:'Owner', f:r => userName(r.owner) },
+    { t:'Times contacted', f:r => r.contacts },
+    { t:'Stage changes', f:r => r.moves },
+    { t:'Orders', f:r => r.orders },
+    { t:'Value', f:r => r.value },
+    { t:'Last contacted', f:r => r.last || '' }]));
+
+  function wireHist(){
+    $('#view').querySelectorAll('[data-hist]').forEach(el => el.onclick = () => {
+      S.histAcc = el.dataset.hist; S.histFrom = -1; S.histTo = -1; viewHistory();
+    });
+  }
+  // the "show the rest" button re-renders rows, so rewire after it fires
+  const mb = $('#moreBtn');
+  if (mb) mb.addEventListener('click', () => setTimeout(wireHist, 0));
+}
+
+/* ---- one client, month by month ---------------------------------------- */
+function historyOne(accId){
+  const a = S.byId[accId] || {};
+  const h = clientHistory(accId);
+  if (S.histFrom == null) S.histFrom = -1;
+  if (S.histTo == null) S.histTo = -1;
+
+  let moves = h.moves.slice()
+    .sort((x,y) => String(y.changedAt).localeCompare(String(x.changedAt)));
+  if (S.histFrom >= 0) moves = moves.filter(m => m.fromStage === S.histFrom);
+  if (S.histTo   >= 0) moves = moves.filter(m => m.toStage === S.histTo);
+
+  const opt = (sel, v, lbl) =>
+    `<option value="${v}"${sel === v ? ' selected' : ''}>${lbl}</option>`;
+  const stageOpts = sel => opt(sel, -1, 'Any stage')
+    + STAGES.map((s,i) => opt(sel, i, s.k + ' · ' + s.n)).join('');
+
+  const totals = h.rows.reduce((t,r) => ({
+    contacts: t.contacts + r.contacts, moves: t.moves + r.moves,
+    orders: t.orders + r.orders, value: t.value + r.value }),
+    { contacts:0, moves:0, orders:0, value:0 });
+
+  const mRow = r => `<div class="it" style="cursor:default">
+    <span class="nm">${monthLabel(r.mk)}</span>
+    <span class="meta">${r.contacts} contact${r.contacts===1?'':'s'}
+      · ${r.moves} move${r.moves===1?'':'s'}
+      · ${r.orders ? `<b>${r.orders} order${r.orders===1?'':'s'} ${inr(r.value)}</b>`
+                   : '<span class="muted">no order</span>'}</span>
+  </div>`;
+
+  const moveRow = m => {
+    const d = parseDate(m.changedAt);
+    return `<div class="it" style="cursor:default">
+      <span style="flex:0 0 auto;display:flex;gap:4px;align-items:center">
+        ${m.fromStage == null ? '' : stageTag(m.fromStage)}
+        <span class="muted">→</span>${stageTag(m.toStage)}</span>
+      <span class="meta">${d ? esc(iso(d)) : '—'}
+        ${m.daysInPrevious != null ? '· after ' + m.daysInPrevious + 'd' : ''}
+        · ${esc(m.changedBy === 'import' ? 'from the workbook'
+                                         : userName(m.changedBy))}</span>
+    </div>`;
+  };
+
+  const actRow = x => `<div class="it" style="cursor:default;
+      flex-direction:column;align-items:flex-start;gap:2px">
+    <div style="display:flex;width:100%;gap:10px;align-items:baseline">
+      <span class="nm">${esc(x.type || 'Contact')}</span>
+      <span class="meta">${esc(String(x.loggedAt||'').slice(0,10))}
+        · ${esc(userName(x.loggedBy))}</span></div>
+    ${x.remarks ? `<div class="sm muted">${esc(x.remarks)}</div>` : ''}
+  </div>`;
+
+  const acts = h.acts.slice()
+    .sort((x,y) => String(y.loggedAt).localeCompare(String(x.loggedAt)));
+
+  $('#view').innerHTML = `
+    <div class="card">
+      <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap">
+        <b style="font-size:17px">${esc(a.name || 'Client')}</b>
+        <span class="sm muted">${esc(a.region || '')}
+          ${a.owner ? '· ' + esc(userName(a.owner)) : ''}
+          ${a.clientClass ? '· ' + esc(a.clientClass) + ' client' : ''}</span>
+        <button class="chip" id="hback" style="margin-left:auto">← All clients</button>
+      </div>
+    </div>
+
+    <div class="grid2" style="margin-bottom:14px">
+      ${tile('Times contacted', String(totals.contacts),
+             h.lastContact ? 'last on ' + h.lastContact : 'never logged')}
+      ${tile('Stage changes', String(totals.moves), 'recorded moves')}
+      ${tile('Times converted', String(h.conversions),
+             totals.orders + ' order' + (totals.orders===1?'':'s') + ' billed')}
+      ${tile('Billed', inr(totals.value), 'all time')}
+    </div>
+
+    <div class="card">
+      <h2>Month by month</h2>
+      ${h.rows.length ? `<div class="list">${h.rows.map(mRow).join('')}</div>`
+        : '<div class="empty">Nothing recorded for this client.</div>'}
+      <button class="btn sec" id="hcsv1" style="width:auto;padding:9px 14px;
+        margin-top:10px">Download this history</button>
+    </div>
+
+    <div class="card">
+      <h2>Stage changes</h2>
+      <div class="row" style="margin-bottom:10px">
+        <div><label for="hfrom">From</label>
+          <select id="hfrom" class="fld">${stageOpts(S.histFrom)}</select></div>
+        <div><label for="hto">To</label>
+          <select id="hto" class="fld">${stageOpts(S.histTo)}</select></div>
+      </div>
+      ${moves.length ? `<div class="list">${moves.map(moveRow).join('')}</div>`
+        : `<div class="empty">${h.moves.length
+             ? 'No move matches that filter.'
+             : 'No stage change recorded. The workbook only carried a move where the stage actually differed between two rows.'}</div>`}
+    </div>
+
+    <div class="card">
+      <h2>Every contact · ${acts.length}</h2>
+      ${acts.length ? capped(acts, actRow, 40)
+        : '<div class="empty">Nothing logged against this client.</div>'}
+    </div>`;
+
+  $('#hback').onclick = () => { S.histAcc = null; viewHistory(); };
+  $('#hfrom').onchange = () => { S.histFrom = +$('#hfrom').value; historyOne(accId); };
+  $('#hto').onchange   = () => { S.histTo   = +$('#hto').value;   historyOne(accId); };
+  wireMore(acts, actRow, 40);
+  $('#hcsv1').onclick = () => {
+    const name = (a.name || 'client').replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+    download(name + '-history.csv', csv(h.rows, [
+      { t:'Month', f:r => r.mk },
+      { t:'Times contacted', f:r => r.contacts },
+      { t:'Stage changes', f:r => r.moves },
+      { t:'Converted', f:r => r.won },
+      { t:'Orders', f:r => r.orders },
+      { t:'Value', f:r => r.value }]));
+  };
 }
 
 /* ------------------------------------------------------- not built yet */

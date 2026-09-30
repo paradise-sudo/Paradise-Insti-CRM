@@ -333,6 +333,14 @@ exports.onOpportunityWrite = sender()
     const before = change.before.exists ? change.before.data() : null;
     if (before && before.stage === after.stage) return null;   // edit, not a move
 
+    // A bulk import is not a stage change. Without this, the first
+    // load_seed.js run appended 2,012 "created at stage N" rows dated the day
+    // of the load, which is what buried the 618 real transitions the workbook
+    // carried. Later loads are merges and already return above.
+    if (!before && (after.createdBy === 'import' || after.updatedBy === 'import')) {
+      return null;
+    }
+
     const cfgv = await getConfig();
     const now = admin.firestore.FieldValue.serverTimestamp();
 
