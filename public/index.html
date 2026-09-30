@@ -332,7 +332,7 @@ import { getAuth, signInWithCustomToken, signInWithEmailAndPassword,
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 import { getFirestore, initializeFirestore, persistentLocalCache,
          persistentMultipleTabManager,
-         collection, getDocs, doc, getDoc, setDoc, updateDoc,
+         collection, getDocs, onSnapshot, doc, getDoc, setDoc, updateDoc,
          addDoc, query, where, serverTimestamp, writeBatch }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 import { getFunctions, httpsCallable }
@@ -729,32 +729,98 @@ async function boot(authUser){
                              [S.me.role] || S.me.role) + ' · ' + (S.me.email||'');
   $('#whoChip').textContent = (S.me.name||'?').split(' ')[0];
 
-  // Contacts are 2,000 documents used only by phone search, so they are not
-  // worth holding the whole app behind. Orders and targets already load after
-  // the first paint; this pulls contacts into that group too.
-  const [users, accounts, opps] = await Promise.all(
-    ['users','accounts','opportunities'].map(grab));
-  S.users = users; S.accounts = accounts; S.opps = opps; S.contacts = [];
-  users.forEach(u => S.byId[u.id] = u);
-  accounts.forEach(a => S.byId[a.id] = a);
+  // Three collections must be in hand before anything can be drawn.
+  await Promise.all(['users','accounts','opportunities'].map(live));
+  S.contacts = [];
 
   buildNav();
   S.loaded = true;
   go(S.view);
 
-  // Heavier collections load after the first paint.
-  grab('orders').then(o => {
-    S.orders = o;
-    badgeExceptions();
-    if (['dash','exception','winback','shared','data'].includes(S.view)) go(S.view);
+  // The rest attach after the first paint and fill in as they arrive.
+  live('orders'); live('targets'); live('contacts');
+  live('activities'); live('stageHistory');
+}
+
+/* ==================================================================== LIVE
+   Every collection is a listener, not a one-off read. A rep logging Ayush at
+   C0 in Hyderabad shows up on Bashab's screen in Bangalore within a second,
+   without either of them reloading - which is the whole point of replacing a
+   workbook that had to be emailed around.
+
+   The first attach costs the same as the read it replaces; after that only
+   the documents that actually changed come down the wire. With the
+   persistent cache underneath, a second visit attaches from disk and asks
+   the server only for what moved since.                                   */
+
+const LIVE = {
+  users:         { key:'users',    order:0 },
+  accounts:      { key:'accounts', order:0 },
+  opportunities: { key:'opps',     order:0 },
+  orders:        { key:'orders',   order:1 },
+  targets:       { key:'targets',  order:1 },
+  contacts:      { key:'contacts', order:1 },
+  activities:    { key:'acts',     order:1 },
+  stageHistory:  { key:'hist',     order:1 }
+};
+const unsub = {};
+
+function live(name){
+  const spec = LIVE[name];
+  return new Promise((res, rej) => {
+    let first = true;
+    unsub[name] = onSnapshot(collection(db, name), snap => {
+      const rows = snap.docs.map(d => ({ id:d.id, ...d.data() }));
+
+      if (name === 'stageHistory') {
+        // a deal being created is not a deal moving
+        S.hist = rows.filter(r => r.fromStage != null && r.fromStage !== r.toStage);
+      } else {
+        S[spec.key] = rows;
+      }
+      if (name === 'users' || name === 'accounts') {
+        rows.forEach(r => S.byId[r.id] = r);
+      }
+      if (name === 'contacts')   S.contactsReady = true;
+      if (name === 'activities') S.histReady = true;
+      if (name === 'orders')     badgeExceptions();
+
+      if (first) { first = false; res(); }
+      else if (S.loaded) repaint();
+    }, err => {
+      console.error(name + ' listener failed', err);
+      if (first) { first = false; rej(err); }
+    });
   });
-  grab('targets').then(t => { S.targets = t; if (S.view==='dash') go('dash'); });
-  grab('contacts').then(c => { S.contacts = c; S.contactsReady = true; });
-  // The dashboard's contact panels and the whole of Client history need these.
-  // Never on the critical path: they fill in once they arrive.
-  loadHistory().then(() => {
-    if (['dash','history','data'].includes(S.view)) go(S.view);
-  }).catch(() => { /* the screens that need it show their own message */ });
+}
+
+/* Redrawing the screen under someone's hands is worse than being a second
+   out of date, so a repaint waits for a moment when it cannot destroy work:
+   never over an open modal, and never over a half-filled Log activity form.
+   It is remembered and applied the moment that clears. */
+let repaintTimer = null;
+S.dirty = false;
+function repaint(){
+  S.dirty = true;
+  clearTimeout(repaintTimer);
+  repaintTimer = setTimeout(flushRepaint, 400);
+}
+/* A repaint blocked by a modal or a focused field would otherwise sit there
+   forever, so every plausible moment of release tries again. */
+document.addEventListener('focusout', () => setTimeout(flushRepaint, 150));
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) flushRepaint();
+});
+setInterval(flushRepaint, 5000);
+
+function flushRepaint(){
+  if (!S.loaded || !S.dirty) return;
+  if (document.querySelector('#modal')) return;      // mid-decision
+  if (S.view === 'log' && logSel) return;            // mid-entry
+  if (document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/
+      .test(document.activeElement.tagName)) return; // mid-typing
+  S.dirty = false;
+  go(S.view);
 }
 
 /* ==================================================================== NAV */
@@ -765,6 +831,7 @@ const VIEWS = {
   exception: { t:'Exceptions',       ico:'!', roles:['rep','manager','admin'] },
   winback:   { t:'Win back',         ico:'↺', roles:['rep','manager','admin'] },
   shared:    { t:'Shared accounts',  ico:'⇄', roles:['rep','manager','admin'] },
+  feed:      { t:'Entry log',        ico:'≡', roles:['rep','manager','admin'] },
   history:   { t:'Client history',   ico:'⏱', roles:['rep','manager','admin'] },
   data:      { t:'Data & imports',   ico:'⇓', roles:['rep','manager','admin'] },
   // Admin only, deliberately. The calculation returns every person's pay in
@@ -810,13 +877,14 @@ function go(v){
   // now", not "in a window", so they take the rep filter but not the range.
   const NO_REP   = ['log','admin','data','incentive'];
   const NO_RANGE = ['log','admin','data','incentive','pipeline','exception',
-                    'winback','shared','history'];
+                    'winback','shared','history'];   // 'feed' keeps it: the
+                    // entry log exists to answer "what went in, when".
   $('#repChip').style.display   = NO_REP.includes(v) ? 'none' : '';
   $('#rangeChip').style.display = NO_RANGE.includes(v) ? 'none' : '';
   ({ log: viewLog, dash: viewDash, admin: viewAdmin,
      pipeline: viewPipeline, exception: viewExceptions, winback: viewWinback,
      shared: viewShared, data: viewData, incentive: viewIncentive,
-     history: viewHistory
+     history: viewHistory, feed: viewFeed
    }[v] || viewSoon)();
   window.scrollTo(0,0);
 }
@@ -914,6 +982,7 @@ function closeModal(){
   const m = document.querySelector('#modal');
   if (m) m.remove();
   modalSave = null;
+  if (S.dirty) setTimeout(flushRepaint, 50);
 }
 
 /* ============================================================ LOG ACTIVITY
@@ -3482,16 +3551,22 @@ function paintIncentive(d){
    because "when did this client last actually move" is the question the
    workbook could never answer.                                            */
 
-let histLoading = null;
+/* Activities and stage history are live listeners attached at boot, so this
+   no longer fetches anything - it just waits for the first snapshot to land.
+   Kept because two screens ask "is the history here yet" and one of them
+   wants to await it. */
 function loadHistory(){
-  if (histLoading) return histLoading;
-  histLoading = Promise.all([grab('activities'), grab('stageHistory')])
-    .then(([a, s]) => {
-      S.acts = a;
-      S.hist = s.filter(r => r.fromStage != null && r.fromStage !== r.toStage);
-      S.histReady = true;
-    });
-  return histLoading;
+  if (S.histReady && S.hist) return Promise.resolve();
+  return new Promise((res, rej) => {
+    let waited = 0;
+    const t = setInterval(() => {
+      if (S.histReady && S.hist) { clearInterval(t); res(); }
+      else if ((waited += 200) > 30000) {
+        clearInterval(t);
+        rej(new Error('The history did not arrive. Check the connection.'));
+      }
+    }, 200);
+  });
 }
 
 const monthOf = v => { const d = parseDate(v); return d ? iso(d).slice(0, 7) : null; };
@@ -3768,6 +3843,213 @@ function historyOne(accId){
       { t:'Orders', f:r => r.orders },
       { t:'Value', f:r => r.value }]));
   };
+}
+
+/* =============================================================== ENTRY LOG
+   What was actually fed into the system, newest first, for the range in the
+   header. The DCR was a list of entries and people are used to reading it
+   that way - "what did we log this week" is a different question from any
+   roll-up, and until now the app could not answer it.
+
+   A rep sees their own. A manager sees their team. Nobody has to trust a
+   total without being able to look at the rows behind it.                */
+
+function feedRows(uids, from, to){
+  const acts = (S.acts || []).filter(a => {
+    if (!uids.includes(a.loggedBy)) return false;
+    const d = String(a.loggedAt || '').slice(0, 10);
+    return d >= from && d <= to;
+  });
+
+  /* An order booked the same day on the same deal is the same event as far
+     as a reader is concerned, so it is shown on the entry rather than as a
+     second line that looks like duplicate work. */
+  const orderKey = {};
+  S.orders.forEach(o => {
+    const d = String(o.orderDate || '').slice(0, 10);
+    if (d >= from && d <= to) orderKey[o.opportunityId + '|' + d] = o;
+  });
+
+  const rows = acts.map(a => {
+    const d = String(a.loggedAt || '').slice(0, 10);
+    const opp = S.opps.find(o => o.id === a.opportunityId);
+    return {
+      date: d,
+      time: String(a.loggedAt || '').slice(11, 16),
+      accountId: a.accountId,
+      account: accName(a.accountId),
+      type: a.type || 'Contact',
+      by: a.loggedBy,
+      remarks: a.remarks || '',
+      stage: opp ? opp.stage : null,
+      order: orderKey[a.opportunityId + '|' + d] || null
+    };
+  });
+
+  /* Orders with no activity logged against them the same day still belong in
+     a record of what was entered - otherwise revenue appears from nowhere. */
+  const covered = new Set(rows.filter(r => r.order).map(r => r.order.id));
+  S.orders.forEach(o => {
+    const d = String(o.orderDate || '').slice(0, 10);
+    if (d < from || d > to) return;
+    if (covered.has(o.id)) return;
+    if (o.bookedBy && !uids.includes(o.bookedBy)) return;
+    rows.push({ date:d, time:String(o.orderDate||'').slice(11,16),
+      accountId:o.accountId, account:accName(o.accountId),
+      type:'Order', by:o.bookedBy, remarks:'', stage:CLOSED, order:o });
+  });
+
+  return rows.sort((a, b) =>
+    (b.date + b.time).localeCompare(a.date + a.time));
+}
+
+function viewFeed(){
+  const uids = repFilterIds();
+  const { from, to } = S.range;
+
+  if (!S.orders.length || !S.histReady) {
+    $('#view').innerHTML = `<div class="card"><div class="empty">
+      <span class="spin"></span><br><br>Loading the log…</div></div>`;
+    loadHistory().then(() => { if (S.view === 'feed') viewFeed(); }).catch(() => {});
+    return;
+  }
+
+  const all = feedRows(uids, from, to);
+  S.feedType = S.feedType || 'All';
+  S.feedOnlyOrders = !!S.feedOnlyOrders;
+
+  let rows = all;
+  if (S.feedType !== 'All') rows = rows.filter(r => r.type === S.feedType);
+  if (S.feedOnlyOrders) rows = rows.filter(r => r.order);
+
+  const q = norm(S.feedQ || '');
+  if (q) rows = rows.filter(r => norm(r.account).includes(q)
+                              || norm(r.remarks).includes(q));
+
+  const val = rows.reduce((n, r) => n + (r.order ? (r.order.value || 0) : 0), 0);
+  const withOrder = rows.filter(r => r.order).length;
+  const people = new Set(rows.map(r => r.by).filter(Boolean)).size;
+  const days = new Set(rows.map(r => r.date)).size;
+
+  const types = ['All', ...new Set(all.map(r => r.type))];
+  const tChip = t => `<button class="chip${S.feedType===t?' on':''}"
+    data-ft="${esc(t)}">${esc(t)}${t==='All' ? ' ' + all.length : ''}</button>`;
+
+  /* Grouped by day, because that is how a daily call report reads and how
+     anyone checking "did the team work on Tuesday" wants to scan it. */
+  const byDay = {};
+  rows.forEach(r => (byDay[r.date] = byDay[r.date] || []).push(r));
+  const dayKeys = Object.keys(byDay).sort().reverse();
+
+  const entry = r => `<div class="it" data-go="${r.accountId}"
+      style="align-items:flex-start;flex-direction:column;gap:3px">
+    <div style="display:flex;width:100%;gap:8px;align-items:baseline">
+      ${r.stage != null ? stageTag(r.stage) : ''}
+      <span class="nm">${esc(r.account)}</span>
+      <span class="meta">${r.order ? `<b>${inr(r.order.value||0)}</b> · ` : ''}${
+        esc(r.type)} · ${esc(userName(r.by))}${
+        r.time && r.time !== '00:00' ? ' · ' + esc(r.time) : ''}</span>
+    </div>
+    ${r.remarks ? `<div class="sm muted">${esc(r.remarks)}</div>` : ''}
+    ${r.order ? `<div class="sm muted">${
+      r.order.invoiceNumber ? 'Invoice ' + esc(r.order.invoiceNumber)
+                            : '<span class="req">no invoice number</span>'}${
+      r.order.store ? ' · ' + esc(r.order.store)
+                    : ' · <span class="req">no store</span>'}${
+      r.order.paymentStatus ? ' · ' + esc(r.order.paymentStatus) : ''}</div>` : ''}
+  </div>`;
+
+  const CAP = 12;                       // days shown before "show the rest"
+  const shown = S.feedAllDays ? dayKeys : dayKeys.slice(0, CAP);
+
+  $('#view').innerHTML = `
+    <div class="grid2" style="margin-bottom:14px">
+      ${tile('Entries', rows.length.toLocaleString('en-IN'),
+             days + ' day' + (days===1?'':'s') + ' · ' + people
+             + ' ' + (people===1?'person':'people'))}
+      ${tile('Orders booked', String(withOrder), inr(val) + ' billed')}
+      ${tile('Accounts touched',
+             String(new Set(rows.map(r => r.accountId)).size),
+             'in this range')}
+      ${tile('Entries per working day',
+             days ? (rows.length / days).toFixed(1) : '—',
+             'across the people in view')}
+    </div>
+
+    <div class="card">
+      <h2>Filter</h2>
+      <input id="fq" class="fld" type="search" placeholder="Search account or remarks"
+             value="${esc(S.feedQ || '')}" autocapitalize="off" spellcheck="false">
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px">
+        ${types.map(tChip).join('')}
+        <button class="chip${S.feedOnlyOrders?' on':''}" id="fOnly"
+          style="margin-left:auto">Only entries with an order</button>
+      </div>
+    </div>
+
+    ${shown.length ? shown.map(d => `
+      <div class="card">
+        <h2 style="display:flex;gap:8px;align-items:baseline">
+          <span>${esc(dayLabel(d))}</span>
+          <span style="margin-left:auto;text-transform:none;letter-spacing:0">
+            ${byDay[d].length} entr${byDay[d].length===1?'y':'ies'}${
+            (() => { const v = byDay[d].reduce((n,r) =>
+                       n + (r.order ? (r.order.value||0) : 0), 0);
+                     return v ? ' · ' + inr(v) : ''; })()}</span>
+        </h2>
+        <div class="list">${byDay[d].map(entry).join('')}</div>
+      </div>`).join('')
+      : '<div class="card"><div class="empty">Nothing was logged in this range.'
+        + '</div></div>'}
+
+    ${dayKeys.length > CAP && !S.feedAllDays ? `<button class="btn sec" id="fMore"
+      style="width:auto;padding:9px 14px">Show the other
+      ${dayKeys.length - CAP} days</button>` : ''}
+
+    <div class="card" style="margin-top:14px">
+      <button class="btn sec" id="fcsv" style="width:auto;padding:9px 14px">
+        Download this log</button>
+      <p class="hint" style="margin-top:10px">Exactly the rows above, with the
+        range and rep filter from the header applied. Tap any entry to open
+        that account.</p>
+    </div>`;
+
+  wireRows();
+  $('#view').querySelectorAll('[data-ft]').forEach(b => b.onclick = () => {
+    S.feedType = b.dataset.ft; viewFeed();
+  });
+  $('#fOnly').onclick = () => { S.feedOnlyOrders = !S.feedOnlyOrders; viewFeed(); };
+  const fm = $('#fMore');
+  if (fm) fm.onclick = () => { S.feedAllDays = true; viewFeed(); };
+  const fq = $('#fq');
+  fq.oninput = debounce(() => {
+    S.feedQ = fq.value; const at = fq.selectionStart;
+    viewFeed();
+    const n = $('#fq'); if (n) { n.focus(); n.setSelectionRange(at, at); }
+  }, 220);
+  $('#fcsv').onclick = () => download('entry-log-' + from + '-to-' + to + '.csv',
+    csv(rows, [
+      { t:'Date', f:r => r.date },
+      { t:'Time', f:r => r.time },
+      { t:'Account', f:r => r.account },
+      { t:'Type', f:r => r.type },
+      { t:'Logged by', f:r => userName(r.by) },
+      { t:'Stage', f:r => r.stage == null ? '' : STAGES[r.stage].k },
+      { t:'Remarks', f:r => r.remarks },
+      { t:'Order value', f:r => r.order ? (r.order.value || 0) : '' },
+      { t:'Invoice', f:r => r.order ? (r.order.invoiceNumber || '') : '' },
+      { t:'Store', f:r => r.order ? (r.order.store || '') : '' },
+      { t:'Payment', f:r => r.order ? (r.order.paymentStatus || '') : '' }]));
+}
+
+/* 'Today', 'Yesterday', then the date - a log is read relative to now. */
+function dayLabel(d){
+  const t = iso(today());
+  if (d === t) return 'Today · ' + d;
+  const y = new Date(today().getTime() - DAY);
+  if (d === iso(y)) return 'Yesterday · ' + d;
+  const dt = asDate(d);
+  return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dt.getDay()] + ' · ' + d;
 }
 
 /* ------------------------------------------------------- not built yet */
