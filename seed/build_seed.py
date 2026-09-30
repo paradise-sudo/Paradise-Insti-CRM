@@ -25,15 +25,19 @@ F_BASHAB = 'New_Analysis_Sheet_-_Bashab_Fin.xlsx'
 F_SAMEER = 'New_Analysis_Sheet-Sameer.xlsx'
 
 REPS  = ['Sameer', 'Bashab', 'Vishwanath', 'Pradeep', 'Anushikha']
-EMAIL = {
-    'Sameer':     'sameer@paradisefoodcourt.in',
-    'Bashab':     'bashab@paradisefoodcourt.in',
-    'Vishwanath': 'vishwanath@paradisefoodcourt.in',
-    'Pradeep':    'pradeep@paradisefoodcourt.in',
-    'Anushikha':  'anushikha@paradisefoodcourt.in',
-}
+# Real addresses, confirmed by Ayush 30-Sep-26. Lower case is not cosmetic:
+# completeSignup looks a person up with where('email','==',<lowercased>), so a
+# stored address carrying a capital would never match and that rep would get a
+# second, empty account. .lower() below makes that impossible to get wrong.
+EMAIL = {k: v.strip().lower() for k, v in {
+    'Sameer':     'Sameer.rahangdale@paradisefoodcourt.in',
+    'Bashab':     'bashab.datta@paradisefoodcourt.in',
+    'Vishwanath': 'vishwanath.ks@paradisefoodcourt.in',
+    'Pradeep':    'pradeep.kumar@paradisefoodcourt.in',
+    'Anushikha':  'anushika.choudhury@paradisefoodcourt.in',   # note: anushika, no 'h'
+}.items()}
 MANAGER = {'Pradeep': 'Sameer', 'Anushikha': 'Sameer', 'Vishwanath': 'Bashab'}
-ADMIN_EMAIL = 'kumar.ayush@paradisefoodcourt.in'
+ADMIN_EMAIL = 'kumar.ayush@paradisefoodcourt.in'.strip().lower()
 
 # The FY27 workbook is authoritative from this date; history rows on or after
 # it are dropped to avoid double-counting the April 2026 overlap.
@@ -53,6 +57,20 @@ notes  = []
 
 def norm(s):
     return re.sub(r'[^a-z0-9]', '', str(s or '').lower())
+
+
+def uid(person):
+    """User document id: sha256 of the email address, first 16 hex characters.
+
+    This MUST stay identical to completeSignup in functions/index.js, which
+    computes the same thing when somebody registers. Key users by an md5 of
+    their NAME, as this did until 30-Sep-26, and a rep who signs up before the
+    seed is loaded gets a SECOND document - one from each scheme - and signs
+    in to an empty tool while their real deals sit under an id nothing is
+    attached to.
+    """
+    email = ADMIN_EMAIL if person == 'Ayush' else EMAIL[person]
+    return 'usr_' + hashlib.sha256(email.strip().lower().encode()).hexdigest()[:16]
 
 
 def sid(prefix, key):
@@ -239,14 +257,14 @@ report['rows_total'] = len(rows)
 # ---------------------------------------------------------------- users
 users = []
 for r in REPS:
-    users.append(dict(id=sid('usr', r), name=r, email=EMAIL[r], role='rep',
-                      managerId=sid('usr', MANAGER[r]) if r in MANAGER else None,
+    users.append(dict(id=uid(r), name=r, email=EMAIL[r], role='rep',
+                      managerId=uid(MANAGER[r]) if r in MANAGER else None,
                       region='', active=True))
 for u in users:
     if any(v == u['id'] for v in
-           [sid('usr', m) for m in MANAGER.values()]):
+           [uid(m) for m in MANAGER.values()]):
         u['role'] = 'manager'
-users.append(dict(id=sid('usr', 'Ayush'), name='Ayush', email=ADMIN_EMAIL,
+users.append(dict(id=uid('Ayush'), name='Ayush', email=ADMIN_EMAIL,
                   role='admin', managerId=None, region='', active=True))
 
 # ---------------------------------------------------------------- accounts
@@ -273,8 +291,8 @@ for key, rs in by_account.items():
     owner = last['rep'] or (paid[-1]['rep'] if paid else '')
     accounts.append(dict(
         id=aid, name=last['account'][:120], nameNormalised=key,
-        owner=sid('usr', owner) if owner else None,
-        team=sorted({sid('usr', x['rep']) for x in rs if x['rep']}),
+        owner=uid(owner) if owner else None,
+        team=sorted({uid(x['rep']) for x in rs if x['rep']}),
         region=last['region'], type=last['acctType'],
         industry=last['industry'], parentAccountId=None, isSite=False,
         firstOrderDate=first_order.isoformat() if first_order else None,
@@ -311,7 +329,7 @@ for key, rs in by_account.items():
             break
     opportunities.append(dict(
         id=oid, accountId=aid, name=last['account'][:120],
-        owner=sid('usr', owner) if owner else None, stage=st,
+        owner=uid(owner) if owner else None, stage=st,
         stageSince=since.isoformat(), expectedValue=round(last['expected'], 2),
         quotedValue=round(last['expected'], 2) if st in (2, 3) else 0,
         confirmedValue=round(last['expected'], 2) if st == 4 else 0,
@@ -344,14 +362,14 @@ for key, rs in by_account.items():
             accountId=aid, opportunityId=oid,
             type=x['connect'] if x['connect'] in ('Call', 'F2F', 'Email') else 'Call',
             remarks=x['remarks'], checkIn=None,
-            loggedBy=sid('usr', x['rep']) if x['rep'] else None,
+            loggedBy=uid(x['rep']) if x['rep'] else None,
             loggedAt=x['date'].isoformat()))
         if x['actual'] > 0:
             od = x['orderDate'] or x['date']
             orders.append(dict(
                 id=sid('ord', key + od.isoformat() + str(x['actual'])),
                 accountId=aid, opportunityId=oid,
-                bookedBy=sid('usr', x['rep']) if x['rep'] else None,
+                bookedBy=uid(x['rep']) if x['rep'] else None,
                 value=round(x['actual'], 2), orderDate=od.isoformat(),
                 store=x['store'], channel='',
                 invoiceNumber=x['invoiceNo'],
@@ -531,7 +549,7 @@ def load_targets(path):
             matched = next((r for r in REPS if r.lower() == clean.lower()), None)
             if matched:
                 targets.append(dict(id=sid('tgt', matched + mk + bucket),
-                                    userId=sid('usr', matched), month=mk,
+                                    userId=uid(matched), month=mk,
                                     bucket=bucket, amount=round(amt, 2),
                                     scope='rep', accountName=None))
                 report['target_' + bucket] += 1

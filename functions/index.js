@@ -250,22 +250,33 @@ exports.completeSignup = sender().https.onCall(async (data) => {
       'Password must be at least 8 characters.');
   }
 
+  // Check for an existing account FIRST. A second press of Create account -
+  // after the first one already succeeded and spent the code - used to fall
+  // through to 'Verify your email first', which sent people back to re-verify
+  // an address that was already registered. The account existing is the more
+  // specific fact, so it is the one worth reporting.
+  if (await authUserByEmail(email)) {
+    throw new functions.https.HttpsError('already-exists',
+      'An account already exists for this email. Log in instead, or use '
+      + 'Forgot password.');
+  }
+
   const ref = db.collection('otps').doc(email);
   const snap = await ref.get();
   const o = snap.exists ? snap.data() : null;
-  if (!o || !o.verified) {
+  if (!o) {
+    throw new functions.https.HttpsError('not-found',
+      'That verification has expired or was already used. Start the sign-up '
+      + 'again to get a fresh code.');
+  }
+  if (!o.verified) {
     throw new functions.https.HttpsError('permission-denied',
-      'Verify your email first.');
+      'Enter the 6-digit code before setting a password.');
   }
   if (Date.now() > o.expiresAt) {
     await ref.delete();
     throw new functions.https.HttpsError('deadline-exceeded',
-      'That took too long. Start again.');
-  }
-  if (await authUserByEmail(email)) {
-    await ref.delete();
-    throw new functions.https.HttpsError('already-exists',
-      'An account already exists for this email. Log in instead.');
+      'That took more than 20 minutes. Start the sign-up again.');
   }
 
   // Reuse the seeded document id where there is one, so ownership survives.
