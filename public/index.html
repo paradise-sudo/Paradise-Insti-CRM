@@ -403,10 +403,37 @@ const DEFS = {
 };
 const ab = k => `<abbr title="${(DEFS[k]||k).replace(/"/g,'&quot;')}">${k}</abbr>`;
 
+/* The weights a deal's value is multiplied by to get the weighted pipeline.
+   These started as assumptions from the prototype, not as anything Ayush
+   chose, so they live in meta/config and are editable in Admin. STAGES keeps
+   the defaults; a saved config overwrites them in place, so every screen that
+   already reads STAGES[i].w picks them up with no further plumbing. */
+const DEFAULT_W = [0.10, 0.25, 0.45, 0.60, 0.80];
+const cfgDoc = () => (S.meta || []).find(m => m.id === 'config') || {};
+function applyConfig(){
+  const w = cfgDoc().stageWeights;
+  DEFAULT_W.forEach((d, i) => {
+    STAGES[i].w = Array.isArray(w) && typeof w[i] === 'number' ? w[i] : d;
+  });
+  if (S.loaded && ['dash','pipeline'].includes(S.view)) repaint();
+}
+
 /* F2F, not Visit. All 4,439 imported activities are either Call or F2F, so
    an app that wrote 'Visit' would split the same thing across two words and
    Client history would count them separately. */
 const ACT_TYPES = ['Call','F2F','Email','WhatsApp','Meeting','Sampling'];
+
+/* Lead temperature. 467 of the 469 open deals came in from the DCR with one,
+   and Hot alone is Rs 83.4L of the pipeline - but nothing in the app set it,
+   so every deal logged here since go-live had a blank one. */
+const TEMPS = [
+  { k:'Hot',  h:8,   d:'Ready to buy, chasing the order' },
+  { k:'Warm', h:35,  d:'Real interest, no commitment yet' },
+  { k:'Cold', h:205, d:'Logged, not moving' }
+];
+const tempOf = k => TEMPS.find(t => t.k === k);
+const tempTag = k => { const t = tempOf(k); return t
+  ? `<span class="tag" style="background:hsl(${t.h} 62% 45%)">${t.k}</span>` : ''; };
 /* The three values the workbook actually uses. It previously offered
    Partial/Received/Overdue, which appear on none of the 2,111 imported rows -
    so every order logged in the app was recorded in a vocabulary the reports
@@ -753,7 +780,7 @@ async function boot(authUser){
 
   // The rest attach after the first paint and fill in as they arrive.
   live('orders'); live('targets'); live('contacts');
-  live('activities'); live('stageHistory'); live('creditSplits');
+  live('activities'); live('stageHistory'); live('creditSplits'); live('meta');
 }
 
 /* ==================================================================== LIVE
@@ -774,6 +801,7 @@ const LIVE = {
   orders:        { key:'orders',   order:1 },
   targets:       { key:'targets',  order:1 },
   creditSplits:  { key:'splits',   order:1 },
+  meta:          { key:'meta',     order:1 },
   contacts:      { key:'contacts', order:1 },
   activities:    { key:'acts',     order:1 },
   stageHistory:  { key:'hist',     order:1 }
@@ -796,6 +824,7 @@ function live(name){
       if (name === 'users' || name === 'accounts') {
         rows.forEach(r => S.byId[r.id] = r);
       }
+      if (name === 'meta') applyConfig();
       if (name === 'contacts')   S.contactsReady = true;
       if (name === 'activities') S.histReady = true;
       if (name === 'orders')     badgeExceptions();
@@ -895,7 +924,7 @@ document.addEventListener('keydown', e => { if (e.key==='Escape') closeDrawer();
 function go(v){
   if (!VIEWS[v] || !VIEWS[v].roles.includes(S.me.role)) v = firstView();
   if (v !== 'log') S.holdLog = false;
-  if (v !== 'admin') S.splitFlash = null;
+  if (v !== 'admin') { S.splitFlash = null; S.wFlash = null; }
   if (v !== 'history') S.histAcc = null;   // don't reopen one client later
   S.view = v;
   $('#vtitle').textContent = VIEWS[v].t;
@@ -1146,6 +1175,15 @@ function renderLogForm(){
 
       <div id="stageExtra"></div>
 
+      <div id="tempWrap" style="margin-top:4px">
+        <label>How warm is it?</label>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">
+          ${TEMPS.map(t => `<button type="button" class="chip tmp${
+            (opp && opp.temperature) === t.k ? ' on' : ''}" data-temp="${t.k}"
+            title="${esc(t.d)}">${t.k}</button>`).join('')}
+        </div>
+      </div>
+
       <div class="row" style="margin-top:4px">
         <div><label for="nad">Next action date</label>
           <input id="nad" type="date" class="fld"
@@ -1254,6 +1292,15 @@ function stageExtra(){
   }
   box.innerHTML = h;
 
+  $('#view').querySelectorAll('.tmp').forEach(b => b.onclick = () => {
+    const was = b.classList.contains('on');
+    $('#view').querySelectorAll('.tmp').forEach(x => x.classList.remove('on'));
+    if (!was) b.classList.add('on');      // tapping the chosen one clears it
+  });
+
+  const tw = $('#tempWrap');
+  if (tw) tw.style.display = s < CLOSED ? '' : 'none';
+
   const sel = $('#asgn'), an = anushikha();
   if (sel) sel.onchange = () => {
     $('#asgnWhyWrap').style.display = (an && sel.value===an.id) ? 'none' : '';
@@ -1274,6 +1321,10 @@ async function saveLog(){
 
   const remarks = val('remarks');
   if (!remarks) return lmsg('Say what happened — remarks are required.','err');
+
+  const picked = $('#view').querySelector('.tmp.on');
+  const temperature = s < CLOSED && picked ? picked.dataset.temp
+    : (opp && opp.temperature) || '';
 
   const assignTo = val('asgn');
   const why = val('asgnWhy');
@@ -1316,6 +1367,7 @@ async function saveLog(){
       stageSince: stamp(when),
       nextActionDate: s < CLOSED ? stamp(asDate(val('nad'))) : null,
       nextActionType: val('nat') || '',
+      temperature,
       lossReason: s === CANCELLED ? val('loss') : null,
       closedAt: s >= CLOSED ? stamp(when) : null
     };
@@ -1336,7 +1388,7 @@ async function saveLog(){
       oppId = ref.id;
       batch.set(ref, { ...oppData, owner: oppData.owner || S.me.id,
         expectedValue: 0, quotedValue: 0, confirmedValue: 0,
-        expectedOrderDate: null, temperature:'', source:'app',
+        expectedOrderDate: null, source:'app',
         createdAt: serverTimestamp() });
     }
 
@@ -2043,6 +2095,118 @@ const monthLabel = mk => {
     + '-' + String(y).slice(2);
 };
 
+/* ---- stage weights -------------------------------------------------------
+   What a deal at each stage is worth toward the weighted pipeline. These
+   began as assumptions lifted from the prototype - 10/25/45/60/80 - and
+   nobody chose them, so they are set here.
+
+   Beside each one is what the stage history actually shows, because setting a
+   probability without looking at the outturn is guessing twice. That column
+   is small and biased on purpose-built caveats - see below - so it informs
+   the number rather than replacing it.                                     */
+
+/* Of the deals that ever reached this stage, how many ever reached C4?
+   Only deals with a recorded transition can answer, which is the bias: a deal
+   that sat untouched and was quietly abandoned generated no history row, so
+   the sample skews toward deals somebody worked. */
+function observedRates(){
+  const journeys = {};
+  (S.hist || []).forEach(h => {
+    if (h.fromStage == null) return;
+    const j = journeys[h.opportunityId] = journeys[h.opportunityId] || new Set();
+    j.add(h.fromStage); j.add(h.toStage);
+  });
+  const ids = Object.keys(journeys);
+  return [0,1,2,3,4].map(i => {
+    const entered = ids.filter(id => journeys[id].has(i));
+    const won = entered.filter(id => journeys[id].has(CLOSED));
+    return { i, n: entered.length,
+             rate: entered.length ? won.length / entered.length : null };
+  });
+}
+
+function adminWeights(){
+  const obs = observedRates();
+  const sample = Math.max(0, ...obs.map(o => o.n));
+  const cur = i => Math.round(STAGES[i].w * 100);
+
+  return `
+    <div class="card">
+      <h2>Stage weights</h2>
+      <p class="sm muted" style="margin:-4px 0 12px">The weighted pipeline is
+        every open deal's expected value times the weight for its stage. These
+        started as assumptions, not as anything you chose — set them to
+        what you believe.</p>
+      ${dtable(['Stage','Weight','Your history','Deals'],
+        [0,1,2,3,4].map(i => ({ c:[
+          `<span class="tag" style="background:var(${STAGES[i].v})">${STAGES[i].k}</span>
+           <span class="sm muted">${esc(STAGES[i].n)}</span>`,
+          `<input class="fld" data-w="${i}" inputmode="numeric" value="${cur(i)}"
+             style="margin:0;width:66px;text-align:right">%`,
+          obs[i].rate == null ? '<span class="muted">—</span>'
+            : `<b style="color:var(${Math.abs(obs[i].rate - STAGES[i].w) > 0.15
+                ? '--warn' : '--mute'})">${(obs[i].rate*100).toFixed(0)}%</b>`,
+          obs[i].n ? String(obs[i].n) : '<span class="muted">—</span>'
+        ] })))}
+      <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+        <button class="btn" id="wSave" style="width:auto;padding:10px 18px">
+          Save weights</button>
+        <button class="btn sec" id="wReset" style="width:auto;padding:10px 18px">
+          Back to ${DEFAULT_W.map(w => Math.round(w*100)).join('/')}</button>
+      </div>
+      <p id="wMsg" class="msg${S.wFlash ? ' ok' : ''}">${
+        S.wFlash ? esc(S.wFlash) : ''}</p>
+      <p class="hint" style="margin-top:10px">${sample
+        ? `Your history column is drawn from ${sample} deals with a recorded
+           stage change. Treat it as a hint, not an answer: a deal that sat
+           untouched and was quietly dropped left no record, so the sample
+           leans toward deals somebody actually worked and reads high. It
+           becomes trustworthy once the app has a few months of its own
+           history, where every move is recorded.`
+        : `No stage history yet, so there is nothing to compare against. This
+           column fills in as deals move through the app.`}</p>
+    </div>`;
+}
+
+function wireWeights(){
+  const read = () => [0,1,2,3,4].map(i => {
+    const el = $(`[data-w="${i}"]`);
+    const n = Number(digits(el ? el.value : ''));
+    return Math.max(0, Math.min(100, n)) / 100;
+  });
+
+  const save = async (weights, note) => {
+    const b = $('#wSave'); busy(b, 'Saving…');
+    try {
+      await setDoc(doc(db, 'meta', 'config'),
+        { stageWeights: weights, updatedBy: S.me.id, updatedAt: stamp(today()) },
+        { merge: true });
+      S.wFlash = note;
+      msg('wMsg', note, 'ok');
+    } catch (e) {
+      S.wFlash = null;
+      msg('wMsg', friendly(e, 'Could not save the weights.'));
+    } finally { done(b); }
+  };
+
+  $('#wSave').onclick = () => {
+    const w = read();
+    // A later stage being worth less than an earlier one is almost always a
+    // typo, and it would make the weighted pipeline fall as deals progress.
+    for (let i = 1; i < w.length; i++) {
+      if (w[i] < w[i-1]) {
+        msg('wMsg', `${STAGES[i].k} is set lower than ${STAGES[i-1].k}. `
+          + 'A deal cannot get less likely by moving forward — check those two.');
+        return;
+      }
+    }
+    save(w, 'Saved. The weighted pipeline uses these straight away: '
+      + w.map(x => Math.round(x*100)).join('/') + '.');
+  };
+  $('#wReset').onclick = () =>
+    save(DEFAULT_W.slice(), 'Back to the defaults.');
+}
+
 /* ============================================================ CREDIT SPLIT
    Anyone may log against any account - Ayush's rule, and the right one: a
    Bangalore rep standing in a Hyderabad client's office should not have to
@@ -2459,6 +2623,8 @@ function viewAdmin() {
   $('#afy').onchange = draw;
   draw();
 
+  $('#view').insertAdjacentHTML('beforeend', adminWeights());
+  wireWeights();
   $('#view').insertAdjacentHTML('beforeend', adminSplits());
   wireSplits();
   $('#view').insertAdjacentHTML('beforeend', adminTree());
@@ -2512,7 +2678,7 @@ function dealRow(o){
   const late = na && na < TODAY();
   const handed = o.handedFrom && o.owner !== o.handedFrom;
   return `<div class="it" data-go="${o.accountId}">
-    ${stageTag(o.stage)}
+    ${stageTag(o.stage)}${tempTag(o.temperature)}
     <span class="nm">${esc(accName(o.accountId))}${handed
       ? ` <span class="sm muted">→ ${esc(userName(o.owner))}</span>` : ''}</span>
     <span class="meta">${inr(o.expectedValue || 0)}
@@ -2534,6 +2700,7 @@ function viewPipeline(){
   const q = norm(S.pipeQ || '');
   let rows = all;
   if (S.pipeStage >= 0) rows = rows.filter(o => o.stage === S.pipeStage);
+  if (S.pipeTemp) rows = rows.filter(o => (o.temperature || '') === S.pipeTemp);
   if (q) rows = rows.filter(o => norm(accName(o.accountId)).includes(q));
 
   const sorters = {
@@ -2571,6 +2738,15 @@ function viewPipeline(){
         ${[0,1,2,3,4].map(i => chip(i, STAGES[i].k + ' ' + counts(i),
                                     S.pipeStage === i)).join('')}
       </div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+        <span class="sm muted" style="align-self:center;margin-right:2px">Heat</span>
+        <button class="chip${!S.pipeTemp?' on':''}" data-tf="">Any</button>
+        ${TEMPS.map(t => { const n = all.filter(o => o.temperature === t.k).length;
+          const v = all.filter(o => o.temperature === t.k)
+                       .reduce((x,o) => x + (o.expectedValue||0), 0);
+          return `<button class="chip${S.pipeTemp===t.k?' on':''}" data-tf="${t.k}"
+            title="${esc(t.d)}">${t.k} ${n} · ${inr(v)}</button>`; }).join('')}
+      </div>
       <div style="display:flex;flex-wrap:wrap;gap:6px">
         <span class="sm muted" style="align-self:center;margin-right:2px">Sort</span>
         <button class="chip${S.pipeSort==='value'?' on':''}" data-sort="value">Value</button>
@@ -2593,6 +2769,9 @@ function viewPipeline(){
   });
   $('#view').querySelectorAll('[data-sort]').forEach(b => b.onclick = () => {
     S.pipeSort = b.dataset.sort; viewPipeline();
+  });
+  $('#view').querySelectorAll('[data-tf]').forEach(b => b.onclick = () => {
+    S.pipeTemp = b.dataset.tf; viewPipeline();
   });
   const pq = $('#pq');
   pq.oninput = debounce(() => {
@@ -3554,6 +3733,7 @@ const EX_SETS = {
     ['Days in stage',  o => daysIn(o)],
     ['Next action',    o => o.nextActionDate ? iso(parseDate(o.nextActionDate)) : ''],
     ['Owner',      o => userName(o.owner)],
+    ['Temperature', o => o.temperature || ''],
     ['Handed from', o => o.handedFrom ? userName(o.handedFrom) : '']] },
   accounts: { dated:false, cols:[
     ['Account',    a => a.name],

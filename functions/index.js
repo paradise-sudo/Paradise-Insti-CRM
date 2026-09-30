@@ -59,6 +59,9 @@ const DEFAULT_CONFIG = {
   floor: 0.80, cap: 1.20, gateOld: 0.99, headShare: 0.50,
   // each bucket is measured against its own target; overall is not used
   gateBasis: 'monthly',
+  // Weighted-pipeline multipliers, editable in Admin. Nothing server-side
+  // uses them today; they live here so meta/config has one documented shape.
+  stageWeights: [0.10, 0.25, 0.45, 0.60, 0.80],
   slaByStage: [3, 5, 5, 4, 7],
   winbackActionDays: 7,
   handoffSlaHours: 24,
