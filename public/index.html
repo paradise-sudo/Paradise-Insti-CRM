@@ -195,6 +195,22 @@
   .bridge span{display:block;font-size:11.5px;letter-spacing:.02em}
   .bridge b{font-size:15px}
   .chip.sssg{flex:0 0 auto}
+  /* Tables carry six or seven columns. On a phone they scroll sideways
+     inside their own card rather than squeezing every figure to 30px. */
+  table.dt{width:100%;border-collapse:collapse;font-size:12.5px;
+    font-variant-numeric:tabular-nums}
+  table.dt th{text-align:right;font-weight:600;color:var(--mute);font-size:10.5px;
+    text-transform:uppercase;letter-spacing:.04em;padding:0 8px 6px;
+    border-bottom:1px solid var(--line);white-space:nowrap}
+  table.dt td{text-align:right;padding:7px 8px;border-bottom:1px solid var(--line);
+    white-space:nowrap}
+  table.dt .lft{text-align:left}
+  table.dt th:first-child,table.dt td:first-child{padding-left:0}
+  table.dt th:last-child,table.dt td:last-child{padding-right:0}
+  table.dt tbody tr:last-child td{border-bottom:0}
+  table.dt tbody tr[data-stage]:hover{background:var(--bg)}
+  table.dt tfoot td{font-weight:700;border-top:1px solid var(--line);border-bottom:0;
+    padding-top:8px}
   .spin{width:16px;height:16px;border:2px solid var(--line);border-top-color:var(--brand);
     border-radius:50%;animation:sp .7s linear infinite;display:inline-block}
   @keyframes sp{to{transform:rotate(360deg)}}
@@ -411,7 +427,24 @@ function inr(n){
   if (Math.abs(n) >= 1e5) return '₹'+(n/1e5).toFixed(1)+'L';
   return '₹'+n.toLocaleString('en-IN',{maximumFractionDigits:0});
 }
-const iso  = d => d.toISOString().slice(0,10);
+/* LOCAL date, not UTC. toISOString() converts to UTC first, and India is
+   +5:30: at 22:48 on 30 September in Hyderabad, iso(new Date(y, m, 1)) - the
+   first of this month - came back as 2026-08-31. Every MTD range therefore
+   began a day early and carried 1/31 of August's target into September, and
+   anyone opening the app before 05:30 saw yesterday's date as today. */
+const iso = d => {
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+};
+/* A timestamp in local wall-clock time, in exactly the shape the workbook
+   import wrote ('2026-09-30T22:48:00'). Storing toISOString() instead meant
+   an order logged at 02:00 in Hyderabad was filed under the previous day,
+   because every screen reads the date with .slice(0,10). */
+const stamp = d => {
+  const p = n => String(n).padStart(2, '0');
+  return iso(d) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes())
+    + ':' + p(d.getSeconds());
+};
 const today = () => new Date();
 function parseDate(v){
   if (!v) return null;
@@ -721,6 +754,11 @@ async function boot(authUser){
   });
   grab('targets').then(t => { S.targets = t; if (S.view==='dash') go('dash'); });
   grab('contacts').then(c => { S.contacts = c; S.contactsReady = true; });
+  // The dashboard's contact panels and the whole of Client history need these.
+  // Never on the critical path: they fill in once they arrive.
+  loadHistory().then(() => {
+    if (['dash','history','data'].includes(S.view)) go(S.view);
+  }).catch(() => { /* the screens that need it show their own message */ });
 }
 
 /* ==================================================================== NAV */
@@ -1165,11 +1203,11 @@ async function saveLog(){
     // opportunity
     const oppData = {
       accountId: account.id, name: account.name, stage: s,
-      stageSince: when.toISOString(),
-      nextActionDate: s < CLOSED ? new Date(val('nad')).toISOString() : null,
+      stageSince: stamp(when),
+      nextActionDate: s < CLOSED ? asDate(val('nad')).toISOString() : null,
       nextActionType: val('nat') || '',
       lossReason: s === CANCELLED ? val('loss') : null,
-      closedAt: s >= CLOSED ? when.toISOString() : null
+      closedAt: s >= CLOSED ? stamp(when) : null
     };
     if (assignTo) {
       oppData.owner = assignTo;
@@ -1196,14 +1234,14 @@ async function saveLog(){
     batch.set(doc(collection(db,'activities')), {
       accountId: account.id, opportunityId: oppId, type: val('atype'),
       remarks, checkIn: null, loggedBy: S.me.id,
-      loggedAt: when.toISOString()
+      loggedAt: stamp(when)
     });
 
     // order, only on close
     if (s === CLOSED) {
       batch.set(doc(collection(db,'orders')), {
         accountId: account.id, opportunityId: oppId, bookedBy: S.me.id,
-        value: Number(digits(val('ov'))), orderDate: when.toISOString(),
+        value: Number(digits(val('ov'))), orderDate: stamp(when),
         store: val('ostore') || '', channel:'app',
         invoiceNumber: val('inv'), paymentStatus: val('pay'),
         paymentReceivedAt: null, financeApprovedAt: null,
@@ -1357,6 +1395,77 @@ function tile(k, v, sub, tone) {
   </div>`;
 }
 
+/* ---- small chart primitives -------------------------------------------- */
+/* One hue, light to dark by magnitude, with the value written on the row.
+   Not one colour per category: these are magnitudes being compared, and a
+   categorical palette here would imply a meaning the categories do not have. */
+function bars(items, hue){
+  hue = hue == null ? 340 : hue;
+  const mx = Math.max(1, ...items.map(i => Math.abs(i[1])));
+  if (!items.some(i => i[1])) return '<div class="empty">Nothing in range.</div>';
+  return `<div class="funnel">` + items.map((it, n) => {
+    const l = 78 - (items.length > 1 ? n / (items.length - 1) : 0) * 34;
+    return `<div class="fnrow" style="cursor:default">
+      <span class="fnk" style="flex:0 0 96px;font-weight:500;font-size:12px;
+        overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+        title="${esc(it[0])}">${esc(it[0])}</span>
+      <span class="fnbar"><span class="fnfill" style="width:${
+        Math.max(it[1] ? 2 : 0, Math.abs(it[1]) / mx * 100)}%;
+        background:hsl(${hue} 55% ${l}%)"></span></span>
+      <span class="fnv">${it[2]}</span>
+    </div>`;
+  }).join('') + `</div>`;
+}
+
+/* Revenue over the range. Buckets follow the span: daily up to about a month,
+   weekly up to six, monthly beyond - so the bar count stays readable instead
+   of turning into 700 hairlines for a two-year range. */
+function timeSeries(ord, from, to){
+  const a = asDate(from), b = asDate(to);
+  const days = Math.round((b - a) / DAY) + 1;
+  const step = days <= 45 ? 1 : days <= 200 ? 7 : 30;
+  const n = Math.ceil(days / step);
+  const buck = new Array(n).fill(0);
+  ord.forEach(o => {
+    const d = parseDate(o.orderDate);
+    if (!d) return;
+    const i = Math.floor(Math.round((d - a) / DAY) / step);
+    if (i >= 0 && i < n) buck[i] += o.value || 0;
+  });
+  const mx = Math.max(1, ...buck);
+  const lbl = i => {
+    const d = new Date(a.getTime() + i * step * DAY);
+    return step === 1 ? iso(d).slice(5)
+         : step === 7 ? 'week of ' + iso(d).slice(5)
+         : monthLabel(iso(d).slice(0,7));
+  };
+  return `<div style="display:flex;gap:2px;align-items:flex-end;height:110px;
+      margin-top:4px;overflow-x:auto">${buck.map((v,i) =>
+      `<div title="${esc(lbl(i))}: ${inr(v)}" style="flex:1 0 5px;
+        display:flex;flex-direction:column;justify-content:flex-end;height:100%">
+        <div style="width:100%;height:${Math.max(v?2:0, v/mx*100)}%;
+          background:hsl(340 55% 58%);border-radius:2px 2px 0 0"></div></div>`
+    ).join('')}</div>
+    <div class="sm muted" style="display:flex;justify-content:space-between;
+      margin-top:4px"><span>${esc(from.slice(5))}</span>
+      <span>${step===1?'daily':step===7?'weekly':'monthly'}</span>
+      <span>${esc(to.slice(5))}</span></div>`;
+}
+
+/* A table that scrolls sideways on a phone rather than crushing seven
+   columns into 390px. */
+function dtable(head, rows, foot){
+  return `<div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+    <table class="dt"><thead><tr>${head.map((h,i) =>
+      `<th${i ? '' : ' class="lft"'}>${h}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map(r => `<tr${r.click ? ` data-stage="${r.click}"
+        style="cursor:pointer"` : ''}>${r.c.map((c,i) =>
+      `<td${i ? '' : ' class="lft"'}>${c}</td>`).join('')}</tr>`).join('')}</tbody>
+    ${foot ? `<tfoot><tr>${foot.map((c,i) =>
+      `<td${i ? '' : ' class="lft"'}>${c}</td>`).join('')}</tr></tfoot>` : ''}
+    </table></div>`;
+}
+
 function viewDash() {
   const uids = repFilterIds();
   const { from, to } = S.range;
@@ -1372,6 +1481,24 @@ function viewDash() {
   const tgt = targetForRange(from, to, uids);
   const ach = tgt ? net / tgt : 0;
   const accountsBilled = new Set(ord.map(o => o.accountId)).size;
+
+  /* The DCR carried Expected Business and Actual Closed Business side by side.
+     Orders here hold only the actual, so the expectation is read back off the
+     opportunity each order came from: what these deals were forecast to bring
+     against what they actually billed. */
+  const oppById = {};
+  S.opps.forEach(o => oppById[o.id] = o);
+  const expected = ord.reduce((n, o) => {
+    const op = oppById[o.opportunityId];
+    return n + (op ? (op.expectedValue || 0) : 0);
+  }, 0);
+
+  const hoRev  = ord.filter(o => /\bHO\b/i.test(o.paymentStatus || ''))
+                    .reduce((n, o) => n + (o.value || 0), 0);
+  const pendRev = ord.filter(o => /pending/i.test(o.paymentStatus || ''))
+                    .reduce((n, o) => n + (o.value || 0), 0);
+  const aggRev = ord.filter(o => o.aggregator)
+                    .reduce((n, o) => n + (o.value || 0), 0);
 
   // new vs old, by the account's class at load time
   let newRev = 0, oldRev = 0;
@@ -1412,6 +1539,46 @@ function viewDash() {
     return { i, k: STAGES[i].k, n: rows.length,
              v: rows.reduce((n, o) => n + (o.expectedValue || 0), 0) };
   });
+  const committed = open.filter(o => o.stage === 4)
+                        .reduce((n, o) => n + (o.expectedValue || 0), 0);
+
+  /* Volume at every stage, over the RANGE rather than as-of-now: how many
+     deals passed through each stage and what they were worth. Cancelled and
+     closed are in here on purpose - the funnel above shows only what is
+     still open, and "how many did we lose" is the other half of the story. */
+  const inRangeOpps = S.opps.filter(o => oursDeal(o, uids));
+  const volRows = STAGES.map((st, i) => {
+    const rows = inRangeOpps.filter(o => o.stage === i);
+    return { i, k: st.k, n: rows.length,
+             exp: rows.reduce((n, o) => n + (o.expectedValue || 0), 0),
+             act: rows.reduce((n, o) => n + (o.confirmedValue || 0), 0) };
+  });
+  const volTot = volRows.reduce((n, r) => n + r.n, 0);
+
+  /* Region, type and how the team is making contact. Region and type come off
+     the ACCOUNT, so they split billed revenue; connect status comes off the
+     activities, which arrive after the first paint. */
+  const byKey = (get) => {
+    const m = {};
+    ord.forEach(o => {
+      const a = S.byId[o.accountId];
+      const k = (a && get(a)) || 'Not set';
+      m[k] = (m[k] || 0) + (o.value || 0);
+    });
+    return Object.entries(m).sort((x, y) => y[1] - x[1]).slice(0, 8);
+  };
+  const regionSplit = byKey(a => a.region);
+  const typeSplit   = byKey(a => a.type);
+
+  const actIn = (S.acts || []).filter(a => {
+    const d = String(a.loggedAt || '').slice(0, 10);
+    return d >= from && d <= to && uids.includes(a.loggedBy);
+  });
+  const connect = {};
+  actIn.forEach(a => connect[a.type || 'Other'] = (connect[a.type || 'Other'] || 0) + 1);
+  const connectRows = Object.entries(connect).sort((x, y) => y[1] - x[1]);
+  const touched = new Set(actIn.map(a => a.accountId)).size;
+
   const maxV = Math.max(1, ...stageRows.map(r => r.v));
   const funnel = stageRows.map(r => {
     const w = Math.max(r.v ? 2 : 0, r.v / maxV * 100);
@@ -1450,6 +1617,17 @@ function viewDash() {
              growth == null ? null : (growth >= 0 ? '--ok' : '--bad'))}
     </div>
 
+    <div class="grid2" style="margin-bottom:14px">
+      ${tile('Expected business', inr(expected),
+             expected ? (net/expected*100).toFixed(0) + '% realised' : 'no forecast on these deals')}
+      ${tile('Committed at ' + ab('C3'), inr(committed),
+             open.filter(o => o.stage === 4).length + ' waiting on the order')}
+      ${tile('Accounts touched', S.acts ? String(touched) : '—',
+             S.acts ? actIn.length + ' contacts logged' : 'loading activities…')}
+      ${tile('Payment at ' + ab('HO'), net ? (hoRev/net*100).toFixed(0) + '%' : '—',
+             inr(hoRev) + ' of ' + inr(net) + ' billed')}
+    </div>
+
     <div class="card">
       <h2>Open pipeline · ${open.length} deals</h2>
       <div class="grid2" style="margin-bottom:12px">
@@ -1473,6 +1651,58 @@ function viewDash() {
     </div>
 
     <div class="card">
+      <h2>Revenue across the range</h2>
+      ${timeSeries(ord, from, to)}
+      <p class="hint" style="margin-top:10px">Buckets follow the span — daily
+        up to six weeks, weekly up to six months, monthly beyond.</p>
+    </div>
+
+    <div class="card">
+      <h2>Volume at every stage</h2>
+      ${dtable(['Stage','Deals','Expected','Confirmed','Share'],
+        volRows.filter(r => r.n).map(r => ({ click:r.i < 5 ? r.i : null, c:[
+          `<span class="tag" style="background:var(${STAGES[r.i].v})">${r.k}</span>
+           <span class="sm muted">${esc(STAGES[r.i].n)}</span>`,
+          String(r.n), inr(r.exp), r.act ? inr(r.act) : '—',
+          volTot ? (r.n/volTot*100).toFixed(0) + '%' : '—'] })),
+        ['Total', String(volTot),
+         inr(volRows.reduce((n,r) => n + r.exp, 0)),
+         inr(volRows.reduce((n,r) => n + r.act, 0)), '100%'])}
+      <p class="hint" style="margin-top:10px">Every deal you can see, by where
+        it sits now — including ${ab('C4')} and cancelled, which the funnel
+        above leaves out. How many were lost is the other half of the story.
+        Tap an open stage for its deals.</p>
+    </div>
+
+    <div class="grid2" style="margin-bottom:14px">
+      <div class="card" style="margin:0">
+        <h2>Region</h2>
+        ${bars(regionSplit.map(([k,v]) => [k, v, inr(v)]))}
+      </div>
+      <div class="card" style="margin:0">
+        <h2>Type of account</h2>
+        ${bars(typeSplit.map(([k,v]) => [k, v, inr(v)]))}
+      </div>
+      <div class="card" style="margin:0">
+        <h2>How the team made contact</h2>
+        ${S.acts ? bars(connectRows.map(([k,v]) => [k, v, String(v)]))
+          : `<div class="empty"><span class="spin"></span><br><br>
+             Loading activities…</div>`}
+        ${S.acts && actIn.length ? `<p class="hint" style="margin-top:10px">
+          ${actIn.length} contacts across ${touched} accounts —
+          ${(actIn.length/Math.max(1,touched)).toFixed(1)} each.</p>` : ''}
+      </div>
+      <div class="card" style="margin:0">
+        <h2>Money still to come in</h2>
+        ${bars([['At HO', hoRev, inr(hoRev)],
+                ['Pending', pendRev, inr(pendRev)],
+                ['Through aggregators', aggRev, inr(aggRev)]])}
+        <p class="hint" style="margin-top:10px">Pending is billed revenue with
+          no payment recorded against it yet.</p>
+      </div>
+    </div>
+
+    <div class="card">
       <h2>New and old clients</h2>
       <div class="splitbar">
         <span style="width:${net ? newRev / net * 100 : 50}%;background:hsl(340 55% 62%)"></span>
@@ -1489,8 +1719,33 @@ function viewDash() {
     </div>
 
     <div class="card">
-      <h2>By rep</h2>
-      <div class="list">
+      <h2>Target vs actual by rep</h2>
+      ${perRep.length ? dtable(
+        ['Rep','Target','Actual','Variance','Ach','Orders'],
+        perRep.map(r => ({ c:[
+          esc(r.name), r.t ? inr(r.t) : '—', inr(r.v),
+          r.t ? `<span style="color:var(${tone(r.a)})">${
+                  (r.v>=r.t?'+':'−') + inr(Math.abs(r.v-r.t)).slice(1)}</span>`
+              : '—',
+          r.t ? `<b style="color:var(${tone(r.a)})">${(r.a*100).toFixed(0)}%</b>`
+              : '—',
+          String(r.n)] })),
+        ['Team',
+         inr(perRep.reduce((n,r) => n + r.t, 0)),
+         inr(perRep.reduce((n,r) => n + r.v, 0)),
+         (() => { const t = perRep.reduce((n,r)=>n+r.t,0),
+                        v = perRep.reduce((n,r)=>n+r.v,0);
+                  return `<span style="color:var(${tone(t?v/t:0)})">${
+                    (v>=t?'+':'−') + inr(Math.abs(v-t)).slice(1)}</span>`; })(),
+         (() => { const t = perRep.reduce((n,r)=>n+r.t,0),
+                        v = perRep.reduce((n,r)=>n+r.v,0);
+                  return t ? (v/t*100).toFixed(0) + '%' : '—'; })(),
+         String(perRep.reduce((n,r) => n + r.n, 0))])
+        : ''}
+      <p class="hint" style="margin-top:10px">Targets are monthly, so a
+        part-month range is pro-rated by days — a ten-day range carries
+        about a third of the month.</p>
+      <div class="list" style="margin-top:12px">
         ${perRep.length ? perRep.map(r => `
           <div class="it" style="cursor:default;align-items:flex-start;
                flex-direction:column;gap:6px">
@@ -2194,37 +2449,187 @@ function viewShared(){
 }
 
 /* ========================================================= DATA & IMPORTS
-   What came out of the workbook, what is missing, and a way to get any of it
-   back out as a CSV. The import report is written by load_seed.js, so this
-   screen tells you when the data was last refreshed rather than leaving you
-   to guess from the numbers.                                              */
+   Three jobs on one screen:
 
+   1. Say what is in here and what the import had to clean, because a number
+      nobody can trace is a number nobody trusts.
+   2. Take data IN. Contact numbers above all: the DCR carried a SPOC Number
+      column and it is empty on all 4,439 rows, so search-by-number has
+      nothing to search until somebody fills it. Anushikha's Apollo and
+      LinkedIn exports go in here, and cold lists land in `prospects` rather
+      than the pipeline so 500 names cannot crater the conversion rate.
+   3. Get data OUT properly - chosen range, chosen columns, Excel or CSV.
+
+   Re-importing the DCR itself is deliberately NOT here. That parse has
+   thirteen cleaning rules behind it and lives in seed/build_seed.py where it
+   can be read and argued with; a browser button that silently half-does it
+   is how a CRM ends up with two Deloittes.                                */
+
+/* ---- CSV out ------------------------------------------------------------ */
 function csv(rows, cols){
   const q = v => {
     const s = v == null ? '' : String(v);
-    return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   };
   return cols.map(c => q(c.t)).join(',') + '\n'
     + rows.map(r => cols.map(c => q(c.f(r))).join(',')).join('\n');
 }
-function download(name, text){
-  const b = new Blob([text], { type:'text/csv;charset=utf-8' });
+function download(name, text, type){
+  const b = new Blob([text], { type: type || 'text/csv;charset=utf-8' });
   const u = URL.createObjectURL(b);
   const a = document.createElement('a');
   a.href = u; a.download = name; document.body.appendChild(a); a.click();
   a.remove(); setTimeout(() => URL.revokeObjectURL(u), 4000);
 }
 
+/* ---- SheetJS, loaded only if someone actually asks for Excel ----------- */
+let xlsxReady = null;
+function needXlsx(){
+  if (xlsxReady) return xlsxReady;
+  xlsxReady = new Promise((res, rej) => {
+    if (window.XLSX) return res(window.XLSX);
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    s.onload  = () => res(window.XLSX);
+    s.onerror = () => rej(new Error('Could not load the Excel library. '
+      + 'Check the connection, or use CSV.'));
+    document.head.appendChild(s);
+  });
+  return xlsxReady;
+}
+
+/* A CSV parser that survives quoted commas and embedded newlines, because
+   every real contact list has a company with a comma in its name. */
+function parseCsv(text){
+  const rows = []; let row = [], cell = '', q = false;
+  text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === '"' && text[i+1] === '"') { cell += '"'; i++; }
+      else if (c === '"') q = false;
+      else cell += c;
+    } else if (c === '"') q = true;
+    else if (c === ',') { row.push(cell); cell = ''; }
+    else if (c === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
+    else cell += c;
+  }
+  if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+  return rows.filter(r => r.some(x => String(x).trim() !== ''));
+}
+
+async function readSheet(file){
+  const name = file.name.toLowerCase();
+  if (name.endsWith('.csv') || name.endsWith('.txt')) {
+    return parseCsv(await file.text());
+  }
+  const X = await needXlsx();
+  const wb = X.read(await file.arrayBuffer(), { type:'array', cellDates:true });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  return X.utils.sheet_to_json(ws, { header:1, raw:false, defval:'' })
+    .filter(r => r.some(x => String(x).trim() !== ''));
+}
+
+function downloadXlsx(name, sheets){          // sheets: [{name, rows:[[...]]}]
+  return needXlsx().then(X => {
+    const wb = X.utils.book_new();
+    sheets.forEach(s => X.utils.book_append_sheet(wb,
+      X.utils.aoa_to_sheet(s.rows), s.name.slice(0, 31)));
+    X.writeFile(wb, name);
+  });
+}
+
+/* ---- what can be uploaded ---------------------------------------------- */
+const UPLOADS = {
+  contacts: {
+    label: 'Contacts',
+    blurb: 'Names and numbers against accounts that already exist. This is '
+         + 'what makes search-by-number work.',
+    cols: [
+      { k:'account',     t:'Account name', req:true,
+        hint:'Must match an account already in the CRM' },
+      { k:'name',        t:'Contact name', req:true },
+      { k:'phone',       t:'Phone' },
+      { k:'email',       t:'Email' },
+      { k:'designation', t:'Designation' },
+      { k:'isPrimary',   t:'Primary', hint:'yes / no' },
+      { k:'notes',       t:'Notes' }
+    ]
+  },
+  prospects: {
+    label: 'Prospects (cold lists)',
+    blurb: 'Apollo and LinkedIn exports. These land in the prospect pool, '
+         + 'NOT the pipeline, so a list of 500 names cannot crater the '
+         + 'conversion rate. A rep promotes one when it becomes real.',
+    cols: [
+      { k:'company',     t:'Company', req:true },
+      { k:'name',        t:'Contact name' },
+      { k:'phone',       t:'Phone' },
+      { k:'email',       t:'Email' },
+      { k:'designation', t:'Designation' },
+      { k:'region',      t:'Region' },
+      { k:'industry',    t:'Industry' },
+      { k:'source',      t:'Source', hint:'Apollo, LinkedIn, referral…' }
+    ]
+  }
+};
+
+/* Guess the mapping from the header row. Deliberately generous - the whole
+   point is that Ayush does not rename columns before uploading. */
+function guessMap(headers, cols){
+  const norm2 = s => String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+  const ALIAS = {
+    account:['account','acname','acname','accountname','company','client',
+             'companyname','organisation','organization'],
+    company:['company','companyname','account','accountname','organisation',
+             'organization','client'],
+    name:['name','contactname','spoc','spocname','person','fullname',
+          'firstname','contact'],
+    phone:['phone','mobile','number','spocnumber','contactnumber','phonenumber',
+           'mobilenumber','cell','whatsapp'],
+    email:['email','emailaddress','mail','workemail'],
+    designation:['designation','title','jobtitle','role','position'],
+    isPrimary:['primary','isprimary','main'],
+    notes:['notes','remarks','comment','comments'],
+    region:['region','city','location','branch'],
+    industry:['industry','sector','vertical','type'],
+    source:['source','channel','listsource','origin']
+  };
+  const out = {};
+  cols.forEach(c => {
+    const want = ALIAS[c.k] || [c.k];
+    let hit = -1;
+    headers.forEach((h, i) => {
+      if (hit >= 0) return;
+      const n = norm2(h);
+      if (!n) return;
+      if (want.includes(n)) hit = i;
+    });
+    if (hit < 0) headers.forEach((h, i) => {       // looser second pass
+      if (hit >= 0) return;
+      const n = norm2(h);
+      if (n && want.some(w => n.includes(w) || w.includes(n))) hit = i;
+    });
+    out[c.k] = hit;
+  });
+  return out;
+}
+
 function viewData(){
+  const uids = repFilterIds();
   const ready = S.orders.length > 0;
+  S.upKind = S.upKind || 'contacts';
+
   const counts = [
     ['Accounts', S.accounts.length], ['Contacts', S.contacts.length],
     ['Opportunities', S.opps.length], ['Orders', S.orders.length],
     ['Targets', S.targets.length], ['People', S.users.length]
   ];
+  const withPhone = S.contacts.filter(c => c.phone).length;
+  const noSpoc = S.contactsReady
+    ? S.accounts.filter(a => !S.contacts.some(c => c.accountId === a.id)).length
+    : null;
 
-  const noSpoc = S.accounts.filter(a =>
-    !S.contacts.some(c => c.accountId === a.id)).length;
   const dupish = {};
   S.accounts.forEach(a => {
     const k = (a.nameNormalised || norm(a.name)).slice(0, 14);
@@ -2232,6 +2637,16 @@ function viewData(){
   });
   const dups = Object.values(dupish).filter(g => g.length > 1)
     .sort((a,b) => b.length - a.length);
+
+  const gap = (label, n, note, bad) => `<div class="it" style="cursor:default">
+    <span class="nm">${label}</span>
+    <span class="meta">${n == null ? 'loading…'
+      : `<b style="color:var(${bad && n ? '--bad' : '--mut'})">${
+          typeof n === 'number' ? n.toLocaleString('en-IN') : n}</b>`}
+      ${note ? '· ' + note : ''}</span></div>`;
+
+  const kindBtn = k => `<button class="chip${S.upKind===k?' on':''}"
+    data-kind="${k}">${UPLOADS[k].label}</button>`;
 
   $('#view').innerHTML = `
     <div class="card">
@@ -2244,52 +2659,125 @@ function viewData(){
         was last refreshed…</p>
     </div>
 
-    <div class="card">
-      <h2>Known gaps</h2>
-      <div class="list">
-        <div class="it" style="cursor:default">
-          <span class="nm">Accounts with no named contact</span>
-          <span class="meta">${S.contactsReady ? noSpoc : 'loading…'}</span></div>
-        <div class="it" style="cursor:default">
-          <span class="nm">Names that look like duplicates</span>
-          <span class="meta">${dups.length} groups</span></div>
-        <div class="it" style="cursor:default">
-          <span class="nm">Orders with no rep</span>
-          <span class="meta">${ready
-            ? S.orders.filter(o=>!o.bookedBy).length : 'loading…'}</span></div>
+    <!-- ============================ IN ============================ -->
+    <div class="card" style="border-color:var(--brand)">
+      <h2>Bulk upload</h2>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+        ${Object.keys(UPLOADS).map(kindBtn).join('')}
       </div>
-      <p class="hint" style="margin-top:10px">The workbook carried no ${ab('SPOC')}
-        number on any row, so contacts come from whatever the remarks column
-        held. Duplicates are matched on the first 14 characters of the
-        normalised name — a hint, not a verdict.</p>
+      <p class="sm muted" style="margin:0 0 12px">${esc(UPLOADS[S.upKind].blurb)}</p>
+
+      <div class="row" style="margin-bottom:10px">
+        <div style="flex:0 0 auto">
+          <button class="btn sec" id="tmplCsv"
+            style="width:auto;padding:9px 14px">Download template (CSV)</button>
+        </div>
+        <div style="flex:0 0 auto">
+          <button class="btn sec" id="tmplXls"
+            style="width:auto;padding:9px 14px">Template (Excel)</button>
+        </div>
+      </div>
+
+      <label for="upfile">Then upload it back — .csv or .xlsx</label>
+      <input id="upfile" class="fld" type="file" accept=".csv,.xlsx,.xls,.txt">
+      <p class="hint">The header row is read and the mapping guessed. You
+        correct it, see exactly what will be written, and only then confirm.
+        Nothing is saved before that.</p>
+      <p id="upMsg" class="msg"></p>
+      <div id="upBody"></div>
+    </div>
+
+    <!-- ============================ GAPS ============================ -->
+    <div class="card">
+      <h2>The contact problem, quantified</h2>
+      <p class="sm muted" style="margin:-4px 0 10px">The DCR has a SPOC Number
+        column and it is empty on every row, so there was no contact database
+        to migrate. Search-by-number has nothing to search until these are
+        filled — by upload above, or by reps as they work.</p>
+      <div class="list">
+        ${gap('Contacts with a phone number',
+              S.contactsReady ? withPhone : null,
+              'of ' + S.contacts.length.toLocaleString('en-IN'),
+              !withPhone)}
+        ${gap('Accounts with no contact at all', noSpoc, '', true)}
+        ${gap('Orders with no rep', ready
+              ? S.orders.filter(o=>!o.bookedBy).length : null, '', true)}
+        ${gap('Names that look like duplicates', dups.length, 'groups')}
+      </div>
       ${dups.length ? `<button class="btn sec" id="dupBtn"
-        style="width:auto;padding:9px 14px">See the ${dups.length} groups</button>` : ''}
+        style="width:auto;padding:9px 14px;margin-top:10px">See the
+        ${dups.length} groups</button>` : ''}
     </div>
 
     <div class="card">
-      <h2>Take it out as a CSV</h2>
-      <p class="sm muted" style="margin:-4px 0 10px">Opens in Excel. Exactly
-        what is on screen for the current rep filter, not a fresh query.</p>
-      <div style="display:flex;flex-wrap:wrap;gap:8px">
-        <button class="chip" data-ex="orders">Orders</button>
-        <button class="chip" data-ex="pipeline">Open pipeline</button>
-        <button class="chip" data-ex="accounts">Accounts</button>
-        <button class="chip" data-ex="targets">Targets</button>
+      <h2>What the import had to clean</h2>
+      <div id="cleanBody"><p class="sm muted">Reading the import report…</p></div>
+      <p class="hint" style="margin-top:10px">Nothing was silently corrected.
+        Every rule is in <code>seed/build_seed.py</code> and every count is
+        above. Rejected rows were left out rather than guessed at — nine dates
+        were impossible, and one read 2002.</p>
+    </div>
+
+    <!-- ============================ OUT ============================ -->
+    <div class="card">
+      <h2>Export</h2>
+      <div class="row" style="margin-bottom:10px">
+        <div><label for="exSet">What</label>
+          <select id="exSet" class="fld">
+            <option value="orders">Orders</option>
+            <option value="pipeline">Open pipeline</option>
+            <option value="accounts">Accounts</option>
+            <option value="contacts">Contacts</option>
+            <option value="activities">Activities</option>
+            <option value="targets">Targets</option>
+            <option value="history">Client history summary</option>
+          </select></div>
+        <div><label for="exFmt">Format</label>
+          <select id="exFmt" class="fld">
+            <option value="xlsx">Excel (.xlsx)</option>
+            <option value="csv">CSV</option>
+          </select></div>
       </div>
+      <div class="row" id="exRange" style="margin-bottom:10px">
+        <div><label for="exFrom">From</label>
+          <input type="date" id="exFrom" class="fld" value="${S.range.from}"></div>
+        <div><label for="exTo">To</label>
+          <input type="date" id="exTo" class="fld" value="${S.range.to}"></div>
+      </div>
+      <label>Columns</label>
+      <div id="exCols" style="display:flex;flex-wrap:wrap;gap:6px;
+        margin-bottom:12px"></div>
+      <button class="btn" id="exGo" style="width:auto;padding:10px 18px">
+        Download</button>
+      <p id="exMsg" class="msg"></p>
+      <p class="hint" style="margin-top:10px">Takes the rep filter from the
+        header. Excel gets a second sheet naming the filter, the range and the
+        time, so a file sitting in someone's inbox still says what it is.</p>
+    </div>
+
+    <div class="card">
+      <h2>Where the data lives</h2>
+      <div class="list">
+        ${[['Database','Cloud Firestore, asia-south1 (Mumbai)'],
+           ['Collections','accounts, contacts, opportunities, activities, '
+            + 'orders, stageHistory, targets, prospects, users, auditLog'],
+           ['Front end','Firebase Hosting, static, no server to run'],
+           ['Logic and email','Cloud Functions, permissions enforced server-side'],
+           ['Sign in','Password, with a 6-digit code only to prove the address'],
+           ['Repo','paradise-sudo/Paradise-Insti-CRM']]
+          .map(([k,v]) => `<div class="it" style="cursor:default">
+            <span class="nm">${k}</span>
+            <span class="meta" style="white-space:normal;text-align:right">${
+              esc(v)}</span></div>`).join('')}
+      </div>
+      <p class="hint" style="margin-top:10px">A separate Firebase project and
+        repo from Project Flow. After the mass-email incident, a Functions
+        deploy on one tool must not be able to reach the other.</p>
     </div>`;
 
-  getDoc(doc(db, 'meta', 'import')).then(s => {
-    const el = $('#impLine'); if (!el) return;
-    if (!s.exists()) { el.textContent = 'No import report stored yet.'; return; }
-    const d = s.data();
-    const at = d.loadedAt && d.loadedAt.toDate ? d.loadedAt.toDate() : null;
-    el.innerHTML = 'Last loaded from the workbook '
-      + (at ? esc(at.toLocaleString('en-IN')) : 'at an unknown time')
-      + (d.sourceFile ? ' · ' + esc(d.sourceFile) : '')
-      + (d.rowsRead ? ' · ' + d.rowsRead.toLocaleString('en-IN') + ' rows read' : '');
-  }).catch(() => {
-    const el = $('#impLine'); if (el) el.textContent = 'Could not read the import report.';
-  });
+  wireImportReport();
+  wireUpload();
+  wireExport(uids);
 
   const db2 = $('#dupBtn');
   if (db2) db2.onclick = () => modal('Possible duplicates',
@@ -2300,47 +2788,452 @@ function viewData(){
            <span class="muted">· ${inr(a.lifetimeValue||0)}</span></span>`).join('')}
        </div>`).join('') + `</div>`, null);
 
-  const uids = repFilterIds();
-  const EX = {
-    orders: () => ['orders.csv', csv(
-      S.orders.filter(o => !o.bookedBy || uids.includes(o.bookedBy)), [
-        { t:'Date', f:o => String(o.orderDate||'').slice(0,10) },
-        { t:'Account', f:o => accName(o.accountId) },
-        { t:'Value', f:o => o.value || 0 },
-        { t:'Rep', f:o => o.bookedBy ? userName(o.bookedBy) : '' },
-        { t:'Store', f:o => o.store || '' },
-        { t:'Invoice', f:o => o.invoiceNumber || '' },
-        { t:'Payment', f:o => o.paymentStatus || '' }])],
-    pipeline: () => ['pipeline.csv', csv(openDeals(uids), [
-        { t:'Account', f:o => accName(o.accountId) },
-        { t:'Stage', f:o => STAGES[o.stage].k },
-        { t:'Stage name', f:o => STAGES[o.stage].n },
-        { t:'Expected value', f:o => o.expectedValue || 0 },
-        { t:'Days in stage', f:o => daysIn(o) },
-        { t:'Next action', f:o => o.nextActionDate
-            ? iso(parseDate(o.nextActionDate)) : '' },
-        { t:'Owner', f:o => userName(o.owner) }])],
-    accounts: () => ['accounts.csv', csv(
-      S.accounts.filter(a => uids.includes(a.owner)), [
-        { t:'Account', f:a => a.name },
-        { t:'Owner', f:a => userName(a.owner) },
-        { t:'Region', f:a => a.region || '' },
-        { t:'Type', f:a => a.type || '' },
-        { t:'Class', f:a => a.clientClass || '' },
-        { t:'Lifetime value', f:a => a.lifetimeValue || 0 },
-        { t:'First order', f:a => String(a.firstOrderDate||'').slice(0,10) }])],
-    targets: () => ['targets.csv', csv(
-      S.targets.filter(t => t.scope !== 'rep' || uids.includes(t.userId)), [
-        { t:'Month', f:t => t.month },
-        { t:'Scope', f:t => t.scope },
-        { t:'Who', f:t => t.userId ? userName(t.userId) : (t.accountName || '') },
-        { t:'Bucket', f:t => t.bucket },
-        { t:'Amount', f:t => t.amount || 0 }])]
-  };
-  $('#view').querySelectorAll('[data-ex]').forEach(b => b.onclick = () => {
-    const [name, text] = EX[b.dataset.ex]();
-    download(name, text);
+  $('#view').querySelectorAll('[data-kind]').forEach(b => b.onclick = () => {
+    S.upKind = b.dataset.kind; viewData();
   });
+}
+
+/* ---- the import report and the cleaning table --------------------------- */
+function wireImportReport(){
+  getDoc(doc(db, 'meta', 'import')).then(s => {
+    const line = $('#impLine'), body = $('#cleanBody');
+    if (!s.exists()) {
+      if (line) line.textContent = 'No import report stored yet.';
+      if (body) body.innerHTML = '<p class="sm muted">No import report stored.</p>';
+      return;
+    }
+    const d = s.data();
+    const at = d.loadedAt && d.loadedAt.toDate ? d.loadedAt.toDate() : null;
+    if (line) line.innerHTML = 'Last loaded from the workbook '
+      + (at ? esc(at.toLocaleString('en-IN')) : 'at an unknown time')
+      + (d.rowsRead ? ' · ' + d.rowsRead.toLocaleString('en-IN') + ' rows read'
+                      + ' (' + (d.rowsFY27||0).toLocaleString('en-IN') + ' FY27, '
+                      + (d.rowsHistory||0).toLocaleString('en-IN') + ' history)' : '');
+
+    const I = d.dataIssues || {};
+    const RULES = [
+      ['leadstatus_held_stage', 'Lead Status held a stage, not a temperature',
+       'Stage read from Status; temperature left blank rather than guessed'],
+      ['type_unmapped', 'Account type with no FY27 equivalent',
+       'Kept as given — Events, College, School, Church, Travel Group still need your mapping'],
+      ['type_case_fixed', 'Account type with stray spaces or case',
+       'Trimmed and title-cased'],
+      ['date_rejected', 'Dates outside any plausible range',
+       'Rejected, not imported — one read 2002 and would distort every cycle metric'],
+      ['stage_unparsed', 'Stage spelling not recognised',
+       'Left at its previous stage rather than guessed'],
+      ['region_other', 'Regions outside your three',
+       'Kept as-is — Gurgaon, Vijayawada and Vizag are yours to decide on'],
+      ['rep_unmatched', 'Rows with a rep name that matches nobody',
+       'Order kept, rep left blank, and it counts toward nobody’s target'],
+      ['history_after_cutover_dropped', 'History rows on or after 1 April 2026',
+       'Dropped — the FY27 workbook already carries them, and keeping both double-counts'],
+      ['forced_new_client', 'Accounts forced to NEW against their first order date',
+       'Azad Engineering and JCNM Church, on your instruction'],
+      ['pivot_cache_stripped', 'Pivot cache sheets', 'Ignored']
+    ];
+    const rows = RULES.filter(r => I[r[0]]);
+    if (body) body.innerHTML = rows.length
+      ? `<div class="list">${rows.map(r => `<div class="it"
+          style="cursor:default;flex-direction:column;align-items:flex-start;gap:3px">
+          <div style="display:flex;width:100%;gap:10px;align-items:baseline">
+            <span class="nm">${esc(r[1])}</span>
+            <span class="meta">${I[r[0]].toLocaleString('en-IN')} rows</span></div>
+          <div class="sm muted">${esc(r[2])}</div></div>`).join('')}</div>`
+      : '<p class="sm muted">The import reported nothing to clean.</p>';
+  }).catch(() => {
+    const line = $('#impLine');
+    if (line) line.textContent = 'Could not read the import report.';
+  });
+}
+
+/* ---- upload: template, mapping, preview, write -------------------------- */
+function wireUpload(){
+  const spec = UPLOADS[S.upKind];
+  const header = spec.cols.map(c => c.t);
+  const sample = S.upKind === 'contacts'
+    ? [['Qualcomm', 'Ravi Kumar', '9876543210', 'ravi@example.com',
+        'Admin Manager', 'yes', 'Prefers WhatsApp']]
+    : [['Acme Logistics', 'Priya Nair', '9876543210', 'priya@example.com',
+        'Facilities Head', 'Bangalore', 'Logistics', 'Apollo']];
+
+  $('#tmplCsv').onclick = () =>
+    download(S.upKind + '-template.csv', csv(sample.map(r =>
+      Object.fromEntries(header.map((h,i) => [h, r[i]]))),
+      header.map(h => ({ t:h, f:r => r[h] }))));
+
+  $('#tmplXls').onclick = () => downloadXlsx(S.upKind + '-template.xlsx', [
+    { name:'Upload', rows:[header].concat(sample) },
+    { name:'How to fill it', rows:[['Column','Required','Notes']].concat(
+        spec.cols.map(c => [c.t, c.req ? 'yes' : 'no', c.hint || ''])) }
+  ]).catch(e => msg('upMsg', e.message));
+
+  $('#upfile').onchange = async () => {
+    const f = $('#upfile').files[0];
+    if (!f) return;
+    msg('upMsg', '');
+    $('#upBody').innerHTML = `<p class="sm muted"><span class="spin"></span>
+      Reading ${esc(f.name)}…</p>`;
+    try {
+      const grid = await readSheet(f);
+      if (grid.length < 2) throw new Error('That file has a header but no rows.');
+      const headers = grid[0].map(x => String(x).trim());
+      const body = grid.slice(1);
+      S.upGrid = { headers, body, map: guessMap(headers, spec.cols) };
+      drawMapping();
+    } catch (e) {
+      $('#upBody').innerHTML = '';
+      msg('upMsg', e.message || 'Could not read that file.');
+    }
+  };
+}
+
+function drawMapping(){
+  const spec = UPLOADS[S.upKind];
+  const { headers, body, map } = S.upGrid;
+
+  $('#upBody').innerHTML = `
+    <div class="card" style="margin:12px 0 0;background:var(--bg)">
+      <h2>Check the mapping · ${body.length.toLocaleString('en-IN')} rows</h2>
+      <div class="list">
+        ${spec.cols.map(c => `<div class="it" style="cursor:default">
+          <span class="nm">${esc(c.t)}${c.req ? ' <span class="req">*</span>' : ''}
+            ${c.hint ? `<br><span class="sm muted">${esc(c.hint)}</span>` : ''}</span>
+          <span class="meta" style="margin-left:auto">
+            <select class="fld" data-map="${c.k}" style="margin:0;min-width:150px">
+              <option value="-1">— not in my file —</option>
+              ${headers.map((h,i) => `<option value="${i}"${
+                map[c.k] === i ? ' selected' : ''}>${esc(h || 'Column ' + (i+1))}</option>`
+              ).join('')}
+            </select></span></div>`).join('')}
+      </div>
+      <button class="btn" id="upPrev" style="width:auto;padding:10px 18px;
+        margin-top:12px">Preview what will be written</button>
+    </div>`;
+
+  $('#upBody').querySelectorAll('[data-map]').forEach(sel => sel.onchange = () => {
+    S.upGrid.map[sel.dataset.map] = +sel.value;
+  });
+  $('#upPrev').onclick = drawPreview;
+}
+
+/* Turn the grid into records, and say honestly which ones cannot be written. */
+function buildRecords(){
+  const spec = UPLOADS[S.upKind];
+  const { body, map } = S.upGrid;
+  const at = i => r => (map[i] >= 0 ? String(r[map[i]] == null ? '' : r[map[i]]).trim() : '');
+
+  const byName = {};
+  S.accounts.forEach(a => { byName[a.nameNormalised || norm(a.name)] = a; });
+
+  const ok = [], bad = [];
+  body.forEach((r, n) => {
+    const get = k => at(k)(r);
+    const rec = {};
+    spec.cols.forEach(c => rec[c.k] = get(c.k));
+    const missing = spec.cols.filter(c => c.req && !rec[c.k]).map(c => c.t);
+    if (missing.length) {
+      bad.push({ row:n+2, why:'missing ' + missing.join(', '), rec });
+      return;
+    }
+    if (S.upKind === 'contacts') {
+      const a = byName[norm(rec.account)];
+      if (!a) {
+        bad.push({ row:n+2, why:'no account called "' + rec.account + '"', rec });
+        return;
+      }
+      rec.accountId = a.id; rec.accountName = a.name;
+    } else {
+      const a = byName[norm(rec.company)];
+      rec.accountId = a ? a.id : null;
+      rec.existing = !!a;
+    }
+    const ph = digits(rec.phone);
+    if (rec.phone && ph.length < 10) {
+      bad.push({ row:n+2, why:'phone "' + rec.phone + '" is not 10 digits', rec });
+      return;
+    }
+    rec.phone = ph;
+    ok.push(rec);
+  });
+
+  // a number already on the same account is not a new contact
+  const seen = new Set(S.contacts.map(c => c.accountId + '|' + (c.phoneNormalised||c.phone||'')));
+  const dupe = [];
+  const fresh = ok.filter(r => {
+    const k = (r.accountId||'') + '|' + (r.phone||'');
+    if (r.phone && seen.has(k)) { dupe.push(r); return false; }
+    seen.add(k);
+    return true;
+  });
+  return { fresh, dupe, bad };
+}
+
+function drawPreview(){
+  const { fresh, dupe, bad } = buildRecords();
+  S.upReady = fresh;
+  const spec = UPLOADS[S.upKind];
+
+  const row = r => `<div class="it" style="cursor:default">
+    <span class="nm">${esc(r.name || r.company || '—')}</span>
+    <span class="meta">${esc(r.accountName || r.company || '')}
+      ${r.phone ? '· ' + esc(r.phone) : '<span class="req">no number</span>'}</span>
+  </div>`;
+
+  $('#upBody').innerHTML = `
+    <div class="card" style="margin:12px 0 0;background:var(--bg)">
+      <h2>Dry run — nothing is written yet</h2>
+      <div class="grid2" style="margin-bottom:12px">
+        ${tile('Will be written', fresh.length.toLocaleString('en-IN'),
+               'new ' + spec.label.toLowerCase(), fresh.length ? '--ok' : null)}
+        ${tile('Already on file', dupe.length.toLocaleString('en-IN'),
+               'same number, same account — skipped')}
+        ${tile('Cannot be written', bad.length.toLocaleString('en-IN'),
+               'listed below', bad.length ? '--bad' : '--ok')}
+      </div>
+      ${fresh.length ? capped(fresh, row, 15) : ''}
+      ${bad.length ? `
+        <h2 style="margin-top:16px">Rejected rows</h2>
+        <div class="list">${bad.slice(0,15).map(b =>
+          `<div class="it" style="cursor:default">
+            <span class="nm">Row ${b.row}</span>
+            <span class="meta"><span class="req">${esc(b.why)}</span></span>
+          </div>`).join('')}</div>
+        ${bad.length > 15 ? `<p class="hint" style="margin-top:8px">and
+          ${bad.length-15} more</p>` : ''}
+        <button class="btn sec" id="upErr" style="width:auto;padding:9px 14px;
+          margin-top:10px">Download the rejected rows</button>` : ''}
+      <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
+        <button class="btn" id="upGo" style="width:auto;padding:10px 18px"${
+          fresh.length ? '' : ' disabled'}>Write ${fresh.length.toLocaleString('en-IN')}
+          ${spec.label.toLowerCase()}</button>
+        <button class="btn sec" id="upBack"
+          style="width:auto;padding:10px 18px">Back to the mapping</button>
+      </div>
+    </div>`;
+
+  wireMore(fresh, row, 15);
+  $('#upBack').onclick = drawMapping;
+  const ue = $('#upErr');
+  if (ue) ue.onclick = () => download('rejected-rows.csv', csv(bad, [
+    { t:'Row in your file', f:b => b.row },
+    { t:'Why', f:b => b.why },
+    ...UPLOADS[S.upKind].cols.map(c => ({ t:c.t, f:b => b.rec[c.k] }))
+  ]));
+
+  $('#upGo').onclick = async () => {
+    const b = $('#upGo'); busy(b, 'Writing…');
+    try {
+      await writeUpload(S.upReady);
+      $('#upBody').innerHTML = '';
+      $('#upfile').value = '';
+      msg('upMsg', S.upReady.length.toLocaleString('en-IN') + ' '
+        + UPLOADS[S.upKind].label.toLowerCase() + ' written. '
+        + (S.upKind === 'contacts'
+           ? 'Search by number works on them from now.'
+           : 'They are in the prospect pool, not the pipeline.'), 'ok');
+      S.upReady = null;
+    } catch (e) {
+      msg('upMsg', friendly(e, 'Could not write them. Nothing partial is left '
+        + 'behind in the batch that failed.'));
+    } finally { done(b); }
+  };
+}
+
+async function writeUpload(recs){
+  const isContact = S.upKind === 'contacts';
+  const col = isContact ? 'contacts' : 'prospects';
+  for (let i = 0; i < recs.length; i += 400) {      // Firestore caps at 500
+    const batch = writeBatch(db);
+    recs.slice(i, i + 400).forEach(r => {
+      const base = { createdAt: serverTimestamp(), createdBy: S.me.id,
+                     updatedBy: S.me.id };
+      batch.set(doc(collection(db, col)), isContact ? {
+        ...base, accountId: r.accountId, name: r.name,
+        phone: r.phone || '', phoneNormalised: r.phone || '',
+        email: r.email || '', designation: r.designation || '',
+        isPrimary: /^(y|yes|true|1)$/i.test(r.isPrimary || ''),
+        notes: r.notes || ''
+      } : {
+        ...base, company: r.company, accountId: r.accountId || null,
+        name: r.name || '', phone: r.phone || '',
+        phoneNormalised: r.phone || '', email: r.email || '',
+        designation: r.designation || '', region: r.region || '',
+        industry: r.industry || '', source: r.source || 'upload',
+        status: 'new', owner: null
+      });
+    });
+    await batch.commit();
+  }
+  // keep the local copy honest so the counts move without a reload
+  if (isContact) recs.forEach(r => S.contacts.push({
+    id: 'local_' + Math.random().toString(36).slice(2),
+    accountId: r.accountId, name: r.name, phone: r.phone || '',
+    phoneNormalised: r.phone || '', email: r.email || '',
+    designation: r.designation || '', isPrimary: false
+  }));
+}
+
+/* ---- export ------------------------------------------------------------- */
+const EX_SETS = {
+  orders: { dated:true, cols:[
+    ['Date',       o => String(o.orderDate||'').slice(0,10)],
+    ['Account',    o => accName(o.accountId)],
+    ['Value',      o => o.value || 0],
+    ['Rep',        o => o.bookedBy ? userName(o.bookedBy) : ''],
+    ['Store',      o => o.store || ''],
+    ['Invoice',    o => o.invoiceNumber || ''],
+    ['Payment',    o => o.paymentStatus || ''],
+    ['Channel',    o => o.channel || '']] },
+  pipeline: { dated:false, cols:[
+    ['Account',    o => accName(o.accountId)],
+    ['Stage',      o => STAGES[o.stage].k],
+    ['Stage name', o => STAGES[o.stage].n],
+    ['Expected value', o => o.expectedValue || 0],
+    ['Days in stage',  o => daysIn(o)],
+    ['Next action',    o => o.nextActionDate ? iso(parseDate(o.nextActionDate)) : ''],
+    ['Owner',      o => userName(o.owner)],
+    ['Handed from', o => o.handedFrom ? userName(o.handedFrom) : '']] },
+  accounts: { dated:false, cols:[
+    ['Account',    a => a.name],
+    ['Owner',      a => userName(a.owner)],
+    ['Region',     a => a.region || ''],
+    ['Type',       a => a.type || ''],
+    ['Industry',   a => a.industry || ''],
+    ['Class',      a => a.clientClass || ''],
+    ['Lifetime value', a => a.lifetimeValue || 0],
+    ['First order',    a => String(a.firstOrderDate||'').slice(0,10)]] },
+  contacts: { dated:false, cols:[
+    ['Account',    c => accName(c.accountId)],
+    ['Name',       c => c.name || ''],
+    ['Phone',      c => c.phone || ''],
+    ['Email',      c => c.email || ''],
+    ['Designation', c => c.designation || ''],
+    ['Primary',    c => c.isPrimary ? 'yes' : 'no']] },
+  activities: { dated:true, cols:[
+    ['Date',       a => String(a.loggedAt||'').slice(0,10)],
+    ['Account',    a => accName(a.accountId)],
+    ['Type',       a => a.type || ''],
+    ['Logged by',  a => userName(a.loggedBy)],
+    ['Remarks',    a => a.remarks || '']] },
+  targets: { dated:false, cols:[
+    ['Month',      t => t.month],
+    ['Scope',      t => t.scope],
+    ['Who',        t => t.userId ? userName(t.userId) : (t.accountName || '')],
+    ['Bucket',     t => t.bucket],
+    ['Amount',     t => t.amount || 0]] },
+  history: { dated:false, cols:[
+    ['Client',     r => r.name],
+    ['Owner',      r => userName(r.owner)],
+    ['Times contacted', r => r.contacts],
+    ['Stage changes',   r => r.moves],
+    ['Orders',     r => r.orders],
+    ['Value',      r => r.value],
+    ['Last contacted',  r => r.last || '']] }
+};
+
+function exportRows(set, uids, from, to){
+  const inRange = d => {
+    const s = String(d || '').slice(0,10);
+    return s && s >= from && s <= to;
+  };
+  switch (set) {
+    case 'orders':   return S.orders
+      .filter(o => (!o.bookedBy || uids.includes(o.bookedBy)) && inRange(o.orderDate));
+    case 'pipeline': return openDeals(uids);
+    case 'accounts': return S.accounts.filter(a => uids.includes(a.owner));
+    case 'contacts': return S.contacts.filter(c => {
+      const a = S.byId[c.accountId]; return a && uids.includes(a.owner); });
+    case 'activities': return (S.acts || [])
+      .filter(a => uids.includes(a.loggedBy) && inRange(a.loggedAt));
+    case 'targets':  return S.targets
+      .filter(t => t.scope !== 'rep' || uids.includes(t.userId));
+    case 'history': {
+      const actBy = {}, ordBy = {}, valBy = {}, lastBy = {}, mvBy = {};
+      (S.acts || []).forEach(a => {
+        actBy[a.accountId] = (actBy[a.accountId]||0) + 1;
+        const d = String(a.loggedAt||'').slice(0,10);
+        if (d && (!lastBy[a.accountId] || d > lastBy[a.accountId]))
+          lastBy[a.accountId] = d;
+      });
+      S.orders.forEach(o => {
+        ordBy[o.accountId] = (ordBy[o.accountId]||0) + 1;
+        valBy[o.accountId] = (valBy[o.accountId]||0) + (o.value||0);
+      });
+      const oppAcc = {}; S.opps.forEach(o => oppAcc[o.id] = o.accountId);
+      (S.hist || []).forEach(h => {
+        const a = oppAcc[h.opportunityId]; if (!a) return;
+        mvBy[a] = (mvBy[a]||0) + 1;
+      });
+      return S.accounts.filter(a => uids.includes(a.owner))
+        .map(a => ({ name:a.name, owner:a.owner, contacts:actBy[a.id]||0,
+                     moves:mvBy[a.id]||0, orders:ordBy[a.id]||0,
+                     value:valBy[a.id]||0, last:lastBy[a.id]||null }))
+        .filter(r => r.contacts || r.orders || r.moves);
+    }
+  }
+  return [];
+}
+
+function wireExport(uids){
+  const drawCols = () => {
+    const set = $('#exSet').value;
+    const spec = EX_SETS[set];
+    $('#exRange').style.display = spec.dated ? '' : 'none';
+    S.exOff = S.exOff || {};
+    $('#exCols').innerHTML = spec.cols.map(([t]) =>
+      `<button class="chip${(S.exOff[set]||[]).includes(t) ? '' : ' on'}"
+        data-col="${esc(t)}">${esc(t)}</button>`).join('');
+    $('#exCols').querySelectorAll('[data-col]').forEach(b => b.onclick = () => {
+      const off = S.exOff[set] = S.exOff[set] || [];
+      const t = b.dataset.col;
+      const i = off.indexOf(t);
+      if (i >= 0) off.splice(i, 1); else off.push(t);
+      drawCols();
+    });
+  };
+  $('#exSet').onchange = drawCols;
+  drawCols();
+
+  $('#exGo').onclick = async () => {
+    const set = $('#exSet').value, fmt = $('#exFmt').value;
+    const spec = EX_SETS[set];
+    const from = $('#exFrom').value, to = $('#exTo').value;
+    const off = S.exOff[set] || [];
+    const cols = spec.cols.filter(([t]) => !off.includes(t));
+    if (!cols.length) return msg('exMsg', 'Pick at least one column.');
+
+    const b = $('#exGo'); busy(b, 'Building…');
+    msg('exMsg', '');
+    try {
+      if ((set === 'activities' || set === 'history') && !S.histReady) {
+        msg('exMsg', 'Fetching activities first…', 'ok');
+        await loadHistory();
+      }
+      const rows = exportRows(set, uids, from, to);
+      if (!rows.length) { msg('exMsg', 'Nothing matches that.'); return; }
+
+      const name = 'paradise-' + set + '-' + iso(today());
+      if (fmt === 'csv') {
+        download(name + '.csv', csv(rows, cols.map(([t,f]) => ({ t, f }))));
+      } else {
+        await downloadXlsx(name + '.xlsx', [
+          { name: set, rows: [cols.map(c => c[0])]
+              .concat(rows.map(r => cols.map(([,f]) => f(r)))) },
+          { name: 'About', rows: [
+            ['Exported', new Date().toLocaleString('en-IN')],
+            ['By', S.me.name || S.me.email],
+            ['Rows', rows.length],
+            ['Reps', S.reps.length ? uids.map(userName).join(', ') : 'all reps'],
+            ['Range', spec.dated ? from + ' to ' + to : 'not date-filtered'],
+            ['Source', 'Paradise Institutional Sales CRM']] }
+        ]);
+      }
+      msg('exMsg', rows.length.toLocaleString('en-IN') + ' rows downloaded.', 'ok');
+    } catch (e) {
+      msg('exMsg', e.message || 'Could not build that file.');
+    } finally { done(b); }
+  };
 }
 
 /* =============================================================== INCENTIVE
