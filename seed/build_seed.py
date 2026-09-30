@@ -41,6 +41,21 @@ MANAGER = {'Pradeep': 'Sameer', 'Anushikha': 'Sameer', 'Vishwanath': 'Bashab'}
 FORCE_NEW = ('azadengineer', 'jcnm')   # 'Azad Engineer' AND 'Azad Engineering'
 
 
+# The DCR genuinely holds rows that match on account, date and value - a
+# caterer can deliver the same order twice in a day, and the workbook also
+# carries some double entries. Hashing only those three collapsed 27 orders
+# and 67 activities into each other, losing Rs 79.8 lakh because the second
+# write silently overwrote the first. Numbering repeats of the same key keeps
+# every row its own document, and keeps the id stable when the workbook grows
+# elsewhere - which a plain row number would not.
+_seen_keys = {}
+
+
+def seq(key):
+    n = _seen_keys.get(key, 0) + 1
+    _seen_keys[key] = n
+    return key if n == 1 else '%s#%d' % (key, n)
+
 def tgt_id(owner, month, bucket):
     """Readable, predictable target id: tgt_<owner>_<month>_<bucket>.
 
@@ -382,7 +397,7 @@ for key, rs in by_account.items():
     # activities + orders
     for x in rs:
         activities.append(dict(
-            id=sid('act', key + x['date'].isoformat() + x['remarks'][:24] + str(x['expected'])),
+            id=sid('act', seq(key + x['date'].isoformat() + x['remarks'][:24] + str(x['expected']))),
             accountId=aid, opportunityId=oid,
             type=x['connect'] if x['connect'] in ('Call', 'F2F', 'Email') else 'Call',
             remarks=x['remarks'], checkIn=None,
@@ -391,7 +406,7 @@ for key, rs in by_account.items():
         if x['actual'] > 0:
             od = x['orderDate'] or x['date']
             orders.append(dict(
-                id=sid('ord', key + od.isoformat() + str(x['actual'])),
+                id=sid('ord', seq(key + od.isoformat() + str(x['actual']))),
                 accountId=aid, opportunityId=oid,
                 bookedBy=uid(x['rep']) if x['rep'] else None,
                 value=round(x['actual'], 2), orderDate=od.isoformat(),
