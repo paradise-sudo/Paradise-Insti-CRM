@@ -493,8 +493,21 @@ function visibleUserIds(){
 }
 function repFilterIds(){
   const vis = visibleUserIds();
-  return S.reps.length ? S.reps.filter(r=>vis.includes(r)) : vis;
+  if (!S.reps.length) return vis;
+  const picked = S.reps.filter(r => vis.includes(r));
+  // Someone may have picked a rep on the Dashboard, which shows everybody,
+  // and then moved to a screen that does not. Showing them an empty screen
+  // would read as a bug, so an out-of-scope pick falls back to their own.
+  return picked.length ? picked : vis;
 }
+
+/* The Dashboard is deliberately the WHOLE team's numbers for everyone -
+   Ayush, 1-Oct-26. A rep looking at it sees the same figures he does, so
+   nobody is working from a private version of the total. Every other screen
+   stays scoped: those are working lists, and a rep does not need Sameer's
+   follow-ups in theirs. */
+const dashFilterIds = () =>
+  S.reps.length ? S.reps : S.users.map(u => u.id);
 
 /* ================================================================= SIGN IN */
 /* Matches Project Flow and the Mystery Audit dashboard. Passwords are handled
@@ -832,12 +845,12 @@ const VIEWS = {
      history and the data screen - sits with the admin. A manager has the
      same menu; what differs is the data behind it, because every screen
      scopes to whoever reports up to them. */
+  dash:      { t:'Dashboard',        ico:'\u25a4', roles:['rep','manager','admin'] },
   log:       { t:'Log activity',     ico:'\u270e', roles:['rep','manager','admin'] },
   feed:      { t:'Entry log',        ico:'\u2261', roles:['rep','manager','admin'] },
   pipeline:  { t:'Pipeline',         ico:'\u25a6', roles:['rep','manager','admin'] },
   winback:   { t:'Win back',         ico:'\u21ba', roles:['rep','manager','admin'] },
   incentive: { t:'Incentive',        ico:'\u20b9', roles:['rep','manager','admin'] },
-  dash:      { t:'Dashboard',        ico:'\u25a4', roles:['admin'] },
   exception: { t:'Exceptions',       ico:'!',      roles:['admin'] },
   shared:    { t:'Shared accounts',  ico:'\u21c4', roles:['admin'] },
   history:   { t:'Client history',   ico:'\u23f1', roles:['admin'] },
@@ -921,7 +934,8 @@ $('#rangeChip').onclick = () => {
 };
 
 $('#repChip').onclick = () => {
-  const vis = visibleUserIds().map(id => S.byId[id]).filter(Boolean);
+  const ids = S.view === 'dash' ? S.users.map(u => u.id) : visibleUserIds();
+  const vis = ids.map(id => S.byId[id]).filter(Boolean);
   const body = `<p class="hint">Tick any number of people.</p>` + vis.map(u =>
     `<label class="it" style="cursor:pointer;border:0">
        <input type="checkbox" value="${u.id}"${S.reps.includes(u.id)?' checked':''}>
@@ -1505,7 +1519,7 @@ function dtable(head, rows, foot){
 }
 
 function viewDash() {
-  const uids = repFilterIds();
+  const uids = dashFilterIds();
   const { from, to } = S.range;
 
   if (!S.orders.length) {
