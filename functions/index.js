@@ -606,13 +606,25 @@ exports.calculateIncentive = functions.region(REGION).https.onCall(async (data, 
   const per = {};
   const blank = () => ({ newRev: 0, oldRev: 0, msnRev: 0,
                          newTarget: 0, oldTarget: 0, overallTarget: 0 });
+  /* Revenue follows CREDIT, not authorship. An order booked on somebody
+     else's account carries a creditSplit - a map of user id to fraction -
+     settled once by Ayush and then reused for that account. No split means
+     it all belongs to whoever booked it, which covers every imported row
+     and every order on a rep's own account. */
   ordersSnap.forEach(d => {
     const o = d.data();
-    if (!o.bookedBy) return;
-    const p = per[o.bookedBy] = per[o.bookedBy] || blank();
-    if (isMsn[o.accountId]) p.msnRev += o.value;
-    else if (klass[o.accountId] === 'old') p.oldRev += o.value;
-    else p.newRev += o.value;
+    const split = o.creditSplit
+      || (o.bookedBy ? { [o.bookedBy]: 1 } : null);
+    if (!split) return;
+    Object.keys(split).forEach(uid => {
+      const share = split[uid] || 0;
+      if (!share) return;
+      const amount = (o.value || 0) * share;
+      const p = per[uid] = per[uid] || blank();
+      if (isMsn[o.accountId]) p.msnRev += amount;
+      else if (klass[o.accountId] === 'old') p.oldRev += amount;
+      else p.newRev += amount;
+    });
   });
 
   // Targets carry a bucket: 'overall' | 'new' | 'old'.

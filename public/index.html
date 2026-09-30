@@ -753,7 +753,7 @@ async function boot(authUser){
 
   // The rest attach after the first paint and fill in as they arrive.
   live('orders'); live('targets'); live('contacts');
-  live('activities'); live('stageHistory');
+  live('activities'); live('stageHistory'); live('creditSplits');
 }
 
 /* ==================================================================== LIVE
@@ -773,6 +773,7 @@ const LIVE = {
   opportunities: { key:'opps',     order:0 },
   orders:        { key:'orders',   order:1 },
   targets:       { key:'targets',  order:1 },
+  creditSplits:  { key:'splits',   order:1 },
   contacts:      { key:'contacts', order:1 },
   activities:    { key:'acts',     order:1 },
   stageHistory:  { key:'hist',     order:1 }
@@ -798,6 +799,9 @@ function live(name){
       if (name === 'contacts')   S.contactsReady = true;
       if (name === 'activities') S.histReady = true;
       if (name === 'orders')     badgeExceptions();
+      if (name === 'creditSplits' && S.me && S.me.role === 'admin') {
+        setNavCount('admin', pendingSplits().length);
+      }
 
       if (first) { first = false; res(); }
       else if (S.loaded) repaint();
@@ -830,7 +834,8 @@ setInterval(flushRepaint, 5000);
 function flushRepaint(){
   if (!S.loaded || !S.dirty) return;
   if (document.querySelector('#modal')) return;      // mid-decision
-  if (S.view === 'log' && logSel) return;            // mid-entry
+  if (S.view === 'log' && (logSel || S.holdLog)) return;   // mid-entry, or
+                                    // sitting on the confirmation just shown
   if (document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/
       .test(document.activeElement.tagName)) return; // mid-typing
   S.dirty = false;
@@ -889,6 +894,8 @@ document.addEventListener('keydown', e => { if (e.key==='Escape') closeDrawer();
 
 function go(v){
   if (!VIEWS[v] || !VIEWS[v].roles.includes(S.me.role)) v = firstView();
+  if (v !== 'log') S.holdLog = false;
+  if (v !== 'admin') S.splitFlash = null;
   if (v !== 'history') S.histAcc = null;   // don't reopen one client later
   S.view = v;
   $('#vtitle').textContent = VIEWS[v].t;
@@ -1196,6 +1203,22 @@ function stageExtra(){
       </div>`;
   }
 
+  if (s === CLOSED && account.owner && account.owner !== S.me.id) {
+    const ap = splitFor(account.id, S.me.id);
+    const pd = pendingSplit(account.id, S.me.id);
+    h += `<div class="banner">${ap
+      ? `This is <b>${esc(userName(account.owner))}</b>'s account. Ayush has
+         already settled the split: <b>${Math.round(ap.pct*100)}%</b> of this
+         order counts to you, the rest to ${esc(userName(account.owner))}.`
+      : pd
+      ? `This is <b>${esc(userName(account.owner))}</b>'s account and the split
+         is still with Ayush. The order counts to you in full until he sets it.`
+      : `This is <b>${esc(userName(account.owner))}</b>'s account. Log it —
+         that is the rule — and Ayush will be asked once how the credit
+         splits. Until he decides it counts to you in full, and it is settled
+         retrospectively.`}</div>`;
+  }
+
   if (s === CLOSED) {
     h += `<div class="row" style="margin-bottom:12px">
         <div><label for="ov">Order value <span class="req">*</span></label>
@@ -1325,15 +1348,40 @@ async function saveLog(){
     });
 
     // order, only on close
+    let raiseSplit = null;
     if (s === CLOSED) {
-      batch.set(doc(collection(db,'orders')), {
+      /* Whose target does this count toward? An order carries its own split
+         rather than pointing at the rule, so a split changed in March cannot
+         silently restate January. */
+      const owner = account.owner;
+      const offTeam = owner && owner !== S.me.id;
+      const approved = offTeam ? splitFor(account.id, S.me.id) : null;
+      const already  = offTeam ? pendingSplit(account.id, S.me.id) : null;
+
+      const orderData = {
         accountId: account.id, opportunityId: oppId, bookedBy: S.me.id,
         value: Number(digits(val('ov'))), orderDate: stamp(when),
         store: val('ostore') || '', channel:'app',
         invoiceNumber: val('inv'), paymentStatus: val('pay'),
         paymentReceivedAt: null, financeApprovedAt: null,
         aggregator: null, commissionPct: 0
-      });
+      };
+      if (approved) {
+        orderData.creditSplit = { [S.me.id]: approved.pct,
+                                  [owner]: round4(1 - approved.pct) };
+        orderData.creditPending = false;
+      } else if (offTeam) {
+        // counts to the person who booked it until Ayush settles it
+        orderData.creditSplit = { [S.me.id]: 1 };
+        orderData.creditPending = true;
+        if (!already) raiseSplit = {
+          accountId: account.id, accountName: account.name,
+          requestedBy: S.me.id, owner, status: 'pending',
+          firstValue: orderData.value, requestedAt: stamp(when)
+        };
+      }
+      batch.set(doc(collection(db,'orders')), orderData);
+      if (raiseSplit) batch.set(doc(collection(db,'creditSplits')), raiseSplit);
     }
 
     await batch.commit();
@@ -1343,11 +1391,16 @@ async function saveLog(){
     else S.opps.push({ id: oppId, accountId: account.id, stage: s, ...oppData });
 
     logSel = null;
+    S.holdLog = true;        // a live repaint must not wipe this confirmation
     $('#logForm').innerHTML = `<div class="card"><h2>Saved</h2>
       <p>${esc(account.name)} logged at ${ab(STAGES[s].k)}.</p>
+      ${raiseSplit ? `<p class="sm" style="color:var(--warn)">Ayush has been
+        asked how the credit on this account splits with
+        ${esc(userName(raiseSplit.owner))}. It counts to you in full until he
+        decides, then it is settled back to that date.</p>` : ''}
       <button class="btn sec" id="again" style="width:auto;padding:9px 14px">
         Log another</button></div>`;
-    $('#again').onclick = viewLog;
+    $('#again').onclick = () => { S.holdLog = false; viewLog(); };
     $('#q').value = ''; $('#qres').innerHTML = '';
   } catch(e){
     lmsg(e.message || 'Could not save.','err');
@@ -1465,7 +1518,7 @@ function ordersIn(from, to, uids) {
   const a = asDate(from), b = new Date(asDate(to).getTime() + DAY - 1);
   return S.orders.filter(o => {
     const d = parseDate(o.orderDate);
-    return d && d >= a && d <= b && (!o.bookedBy || uids.includes(o.bookedBy));
+    return d && d >= a && d <= b && hasCredit(o, uids);
   });
 }
 
@@ -1667,8 +1720,9 @@ function viewDash() {
 
   // ---- per rep ------------------------------------------------------------
   const perRep = uids.map(id => {
-    const mine = ord.filter(o => o.bookedBy === id);
-    const v = mine.reduce((n, o) => n + (o.value || 0), 0);
+    // credit, not authorship: a split order counts part to each of them
+    const mine = ord.filter(o => creditOf(o, id) > 0);
+    const v = mine.reduce((n, o) => n + creditOf(o, id), 0);
     const t = targetForRange(from, to, [id]);
     return { id, name: userName(id), v, t, a: t ? v / t : 0, n: mine.length };
   }).filter(r => r.v || r.t).sort((x, y) => y.v - x.v);
@@ -1943,6 +1997,171 @@ const monthLabel = mk => {
     + '-' + String(y).slice(2);
 };
 
+/* ============================================================ CREDIT SPLIT
+   Anyone may log against any account - Ayush's rule, and the right one: a
+   Bangalore rep standing in a Hyderabad client's office should not have to
+   phone someone to record the order.
+
+   What that rule does not settle is whose target it counts toward. So the
+   first order booked on an account you do not own raises a request; Ayush
+   approves it once with a ratio, and every later order on that same account
+   uses it automatically. Nobody has to remember, and nobody has to argue
+   about it at month end.
+
+   An order carries its own creditSplit - a map of user id to fraction -
+   rather than pointing at the rule. A split changed in March must not
+   silently restate January's numbers.                                     */
+
+const round4 = n => Math.round(n * 10000) / 10000;
+
+const splitFor = (accountId, uid) => (S.splits || []).find(x =>
+  x.accountId === accountId && x.requestedBy === uid && x.status === 'approved');
+
+const pendingSplit = (accountId, uid) => (S.splits || []).find(x =>
+  x.accountId === accountId && x.requestedBy === uid && x.status === 'pending');
+
+/* What this order is worth to this person. No split means it all belongs to
+   whoever booked it, which is every imported row and every order on your own
+   account. */
+function creditOf(o, uid){
+  const sp = o.creditSplit;
+  if (!sp) return o.bookedBy === uid ? (o.value || 0) : 0;
+  return (o.value || 0) * (sp[uid] || 0);
+}
+const hasCredit = (o, uids) => o.creditSplit
+  ? uids.some(u => (o.creditSplit[u] || 0) > 0)
+  : (!o.bookedBy || uids.includes(o.bookedBy));
+
+/* Admin: the queue. Shown as a nav badge so a pending split cannot sit
+   unnoticed while the month closes around it. */
+function pendingSplits(){
+  return (S.splits || []).filter(x => x.status === 'pending');
+}
+
+function adminSplits(){
+  const pend = pendingSplits();
+  const done = (S.splits || []).filter(x => x.status === 'approved');
+
+  const pctInput = x => `<input class="fld" data-pct="${x.id}" inputmode="numeric"
+    value="${x.pct != null ? Math.round(x.pct * 100) : 50}"
+    style="margin:0;width:74px;text-align:right">`;
+
+  return `
+    <div class="card"${pend.length ? ' style="border-color:var(--warn)"' : ''}>
+      <h2 style="display:flex;gap:8px;align-items:center">
+        <span>Credit splits</span>
+        ${pend.length ? `<span class="tag" style="margin-left:auto;
+          background:var(--warn)">${pend.length} waiting</span>` : ''}
+      </h2>
+      <p class="sm muted" style="margin:-4px 0 12px">Raised the first time
+        somebody books an order on an account they do not own. Set the share
+        that goes to the person who booked it; the rest goes to the owner.
+        Every later order on that account uses the same split, with no
+        further approval.</p>
+
+      ${pend.length ? `<div class="list">${pend.map(x => `
+        <div class="it" style="cursor:default;flex-direction:column;
+             align-items:flex-start;gap:8px">
+          <div style="display:flex;width:100%;gap:10px;align-items:baseline">
+            <span class="nm">${esc(x.accountName || accName(x.accountId))}</span>
+            <span class="meta">${esc(userName(x.requestedBy))} booked it ·
+              owned by ${esc(userName(x.owner))}${
+              x.firstValue ? ' · ' + inr(x.firstValue) : ''}</span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            ${pctInput(x)}
+            <span class="sm muted">% to ${esc(userName(x.requestedBy))},
+              rest to ${esc(userName(x.owner))}</span>
+            <button class="btn" data-ok="${x.id}"
+              style="width:auto;padding:7px 14px">Approve</button>
+            <button class="btn sec" data-no="${x.id}"
+              style="width:auto;padding:7px 14px">Decline</button>
+          </div>
+        </div>`).join('')}</div>`
+      : '<p class="sm muted">Nothing waiting.</p>'}
+
+      ${done.length ? `
+        <h2 style="margin-top:16px">Standing splits · ${done.length}</h2>
+        <div class="list">${done.map(x => `
+          <div class="it" style="cursor:default">
+            <span class="nm">${esc(x.accountName || accName(x.accountId))}</span>
+            <span class="meta">${Math.round((x.pct||0)*100)}% ${
+              esc(userName(x.requestedBy))} · ${Math.round((1-(x.pct||0))*100)}% ${
+              esc(userName(x.owner))}
+              <button class="chip" data-edit="${x.id}"
+                style="margin-left:8px">Change</button></span>
+          </div>`).join('')}</div>
+        <p class="hint" style="margin-top:10px">Changing a split applies from
+          now on. Orders already booked keep the split they were booked under,
+          so last month's numbers do not move.</p>` : ''}
+      <p id="splitMsg" class="msg${S.splitFlash ? ' ok' : ''}">${
+        S.splitFlash ? esc(S.splitFlash) : ''}</p>
+    </div>`;
+}
+
+function wireSplits(){
+  const decide = async (id, status) => {
+    const x = (S.splits || []).find(s => s.id === id);
+    if (!x) return;
+    const el = $(`[data-pct="${id}"]`);
+    const pct = Math.max(0, Math.min(100, Number(digits(el ? el.value : '50')))) / 100;
+    try {
+      await updateDoc(doc(db, 'creditSplits', id), {
+        status, pct, decidedBy: S.me.id, decidedAt: stamp(today())
+      });
+      if (status === 'approved') await backfillSplit(x, pct);
+      S.splitFlash = status === 'approved'
+        ? `${userName(x.requestedBy)} keeps ${Math.round(pct*100)}% on `
+          + `${x.accountName || accName(x.accountId)}; `
+          + `${userName(x.owner)} takes the rest.`
+        : 'Declined. It all stays with whoever booked it.';
+      // The listener repaints Admin the moment this write lands, so the
+      // message is held in state and re-rendered rather than shouted at a
+      // DOM node that is about to be replaced.
+      msg('splitMsg', S.splitFlash, 'ok');
+    } catch (e) {
+      S.splitFlash = null;
+      msg('splitMsg', friendly(e, 'Could not save that.'));
+    }
+  };
+
+  $('#view').querySelectorAll('[data-ok]').forEach(b =>
+    b.onclick = () => decide(b.dataset.ok, 'approved'));
+  $('#view').querySelectorAll('[data-no]').forEach(b =>
+    b.onclick = () => decide(b.dataset.no, 'declined'));
+  $('#view').querySelectorAll('[data-edit]').forEach(b => b.onclick = () => {
+    const x = (S.splits || []).find(s => s.id === b.dataset.edit);
+    if (!x) return;
+    modal('Change the split', `
+      <p class="sm muted">${esc(x.accountName || accName(x.accountId))}</p>
+      <label for="np">% to ${esc(userName(x.requestedBy))}</label>
+      <input id="np" class="fld" inputmode="numeric"
+             value="${Math.round((x.pct||0)*100)}">
+      <p class="hint">Applies to orders booked from now on. Earlier orders keep
+        the split they were booked under.</p>`,
+      m => async () => {
+        const pct = Math.max(0, Math.min(100,
+          Number(digits(m.querySelector('#np').value)))) / 100;
+        await updateDoc(doc(db, 'creditSplits', x.id),
+          { pct, decidedBy: S.me.id, decidedAt: stamp(today()) });
+      });
+  });
+}
+
+/* The order that raised the request was booked before anyone had decided, so
+   it went in whole to the person who booked it. Approving settles it. */
+async function backfillSplit(x, pct){
+  const mine = S.orders.filter(o => o.accountId === x.accountId
+    && o.bookedBy === x.requestedBy && o.creditPending);
+  if (!mine.length) return;
+  const batch = writeBatch(db);
+  mine.forEach(o => batch.update(doc(db, 'orders', o.id), {
+    creditSplit: { [x.requestedBy]: pct, [x.owner]: round4(1 - pct) },
+    creditPending: false, updatedBy: S.me.id
+  }));
+  await batch.commit();
+}
+
 /* ---- reporting tree ------------------------------------------------------
    A manager's numbers are their own plus everyone under them, at any depth.
    That roll-up is what makes "reports to" a target decision and not just an
@@ -2194,6 +2413,8 @@ function viewAdmin() {
   $('#afy').onchange = draw;
   draw();
 
+  $('#view').insertAdjacentHTML('beforeend', adminSplits());
+  wireSplits();
   $('#view').insertAdjacentHTML('beforeend', adminTree());
   wireTree();
 }
@@ -3987,6 +4208,13 @@ function viewFeed(){
         r.time && r.time !== '00:00' ? ' · ' + esc(r.time) : ''}</span>
     </div>
     ${r.remarks ? `<div class="sm muted">${esc(r.remarks)}</div>` : ''}
+    ${r.order && r.order.creditSplit
+      && Object.keys(r.order.creditSplit).length > 1 ? `<div class="sm"
+      style="color:var(--warn)">Credit ${Object.entries(r.order.creditSplit)
+        .map(([u,p]) => Math.round(p*100) + '% ' + esc(userName(u)))
+        .join(' · ')}</div>` : ''}
+    ${r.order && r.order.creditPending ? `<div class="sm"
+      style="color:var(--warn)">Credit split not settled yet</div>` : ''}
     ${r.order ? `<div class="sm muted">${
       r.order.invoiceNumber ? 'Invoice ' + esc(r.order.invoiceNumber)
                             : '<span class="req">no invoice number</span>'}${

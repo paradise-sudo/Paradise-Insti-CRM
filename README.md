@@ -299,11 +299,41 @@ Deploy: `firebase deploy --only hosting`, or push and let GitHub Pages serve
   - An open deal cannot be saved without a next action date
   - Nothing is written until validation passes
 
-## What is not built yet
+## Who sees what
 
-Dashboard, Pipeline, Exceptions, Win back, Shared accounts, Data & imports,
-Incentive and Admin screens. Each is stubbed in the nav so the shape is visible.
-The data behind them is loaded and reconciled.
+Set by Ayush, 1-Oct-26.
 
-Remaining order: dashboard → exceptions and win-back → incentive → pipeline
-board → data & imports → admin. Ship each working before starting the next.
+| Screen | Rep | Manager | Admin |
+|---|---|---|---|
+| Dashboard | whole team | whole team | whole team |
+| Log activity, Entry log, Pipeline, Win back, Incentive | own | own + reportees | everyone |
+| Exceptions, Shared accounts, Client history, Data & imports, Admin | — | — | yes |
+
+The Dashboard is deliberately everyone's, with the full team's numbers, so
+nobody works from a private version of the total. Every other screen is a
+working list and scopes to whoever reports up to the person signed in.
+
+Note that this scoping is in the SCREENS, not the database. `firestore.rules`
+lets any signed-in staff member read every collection, and the app holds the
+lot in the browser before filtering. For a team of five that is the right
+trade, but it is not a wall - anyone who opens developer tools can read
+everything. Making it real means per-rep queries and document-level rules,
+and would end the log-against-any-account rule that depends on the search
+seeing every account.
+
+## Credit splits
+
+Anyone may log against any account. What that does not settle is whose target
+it counts toward, so:
+
+1. The first order booked on an account you do not own raises a request. The
+   order counts to whoever booked it in the meantime, flagged `creditPending`.
+2. Ayush approves it once with a ratio in Admin. The order that raised it is
+   settled back to that date.
+3. Every later order on that account uses the same split with no further
+   approval.
+
+An order carries its own `creditSplit` - a map of user id to fraction -
+rather than pointing at the rule, so a split changed in March cannot silently
+restate January. Both the dashboard's per-rep figures and
+`calculateIncentive` read it.
