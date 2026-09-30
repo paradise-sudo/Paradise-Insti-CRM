@@ -152,6 +152,31 @@ grep -c PASTE public/index.html  @media (prefers-color-scheme:dark){
     padding:12px 14px}
   .stat .k{font-size:12px;color:var(--mute);letter-spacing:.02em}
   .stat .v{font-size:22px;font-weight:700;margin-top:3px}
+  /* ---------- dashboard ---------- */
+  .funnel{display:flex;flex-direction:column;gap:2px}
+  .fnrow{display:flex;align-items:center;gap:10px;width:100%;padding:8px 6px;
+    border:0;background:none;cursor:pointer;text-align:left;border-radius:8px;
+    min-height:44px}
+  .fnrow:hover{background:var(--bg)}
+  .fnk{flex:0 0 46px;font-weight:700;font-size:12.5px}
+  .fnbar{flex:1 1 auto;height:12px;background:var(--bg);border-radius:6px;
+    overflow:hidden;min-width:40px}
+  /* 4px rounded data-end, anchored to the baseline */
+  .fnfill{display:block;height:100%;border-radius:0 4px 4px 0}
+  .fnn{flex:0 0 34px;text-align:right;font-size:12.5px;color:var(--mute)}
+  .fnv{flex:0 0 76px;text-align:right;font-weight:650;font-size:13px}
+  .splitbar{display:flex;gap:2px;height:14px;border-radius:7px;overflow:hidden;
+    background:var(--bg)}
+  .splitbar span{display:block}
+  .meter{width:100%;height:8px;background:var(--bg);border-radius:4px;
+    overflow:hidden}
+  .meter span{display:block;height:100%;border-radius:0 4px 4px 0}
+  .bridge{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px;
+    border-top:1px solid var(--line);padding-top:12px}
+  .bridge>div{flex:1 1 92px;min-width:0}
+  .bridge span{display:block;font-size:11.5px;letter-spacing:.02em}
+  .bridge b{font-size:15px}
+  .chip.sssg{flex:0 0 auto}
   .spin{width:16px;height:16px;border:2px solid var(--line);border-top-color:var(--brand);
     border-radius:50%;animation:sp .7s linear infinite;display:inline-block}
   @keyframes sp{to{transform:rotate(360deg)}}
@@ -698,7 +723,7 @@ function go(v){
     b.classList.toggle('on', b.dataset.v === v));
   $('#repChip').style.display = (v==='log'||v==='admin') ? 'none' : '';
   $('#rangeChip').style.display = (v==='log'||v==='admin') ? 'none' : '';
-  ({ log: viewLog }[v] || viewSoon)();
+  ({ log: viewLog, dash: viewDash }[v] || viewSoon)();
   window.scrollTo(0,0);
 }
 
@@ -1185,6 +1210,303 @@ function newAccount(){
       S.accounts.push(local); S.byId[ref.id] = local;
       pick(ref.id);
     });
+}
+
+/* ================================================================ DASHBOARD
+   Forms chosen before colour. The headline numbers are a KPI row of stat
+   tiles, not a bar chart of six unrelated measures. The stage funnel is a
+   magnitude comparison, so it is one hue light-to-dark with the stage code
+   direct-laballed - NOT one colour per stage, because the stage palette fails
+   CVD separation as chart marks (C1 blue and C2 purple sit 0.4 apart for
+   deuteranopes). As labelled chips they are fine; as bars they would not be. */
+
+const DAY = 864e5;
+const asDate = s => new Date(s + 'T00:00:00');
+const monthsBetween = (from, to) => {
+  const out = [], a = asDate(from), b = asDate(to);
+  let y = a.getFullYear(), m = a.getMonth();
+  while (y < b.getFullYear() || (y === b.getFullYear() && m <= b.getMonth())) {
+    out.push('%04d-%02d'.replace('%04d', y).replace('%02d', String(m+1).padStart(2,'0')));
+    m++; if (m > 11) { m = 0; y++; }
+  }
+  return out;
+};
+
+/* A target is a monthly figure. Asked for 1-15 Sep, the honest comparison is
+   half of September's target, not all of it - otherwise every month-to-date
+   view reads as catastrophic underperformance until the 30th. */
+function targetForRange(from, to, uids) {
+  const a = asDate(from), b = asDate(to);
+  let total = 0;
+  for (const mk of monthsBetween(from, to)) {
+    const [y, m] = mk.split('-').map(Number);
+    const mStart = new Date(y, m - 1, 1), mEnd = new Date(y, m, 0);
+    const days = mEnd.getDate();
+    const lo = a > mStart ? a : mStart, hi = b < mEnd ? b : mEnd;
+    const covered = Math.max(0, Math.round((hi - lo) / DAY) + 1);
+    if (!covered) continue;
+    const monthly = S.targets
+      .filter(t => t.scope === 'rep' && t.bucket === 'overall'
+                && t.month === mk && uids.includes(t.userId))
+      .reduce((n, t) => n + (t.amount || 0), 0);
+    total += monthly * (covered / days);
+  }
+  return total;
+}
+
+function ordersIn(from, to, uids) {
+  const a = asDate(from), b = new Date(asDate(to).getTime() + DAY - 1);
+  return S.orders.filter(o => {
+    const d = parseDate(o.orderDate);
+    return d && d >= a && d <= b && (!o.bookedBy || uids.includes(o.bookedBy));
+  });
+}
+
+// Same calendar window, one year back - the basis for SSSG and the LY line.
+const lastYear = iso_ => {
+  const d = asDate(iso_); d.setFullYear(d.getFullYear() - 1); return iso(d);
+};
+
+function tile(k, v, sub, tone) {
+  return `<div class="stat">
+    <div class="k">${k}</div>
+    <div class="v"${tone ? ` style="color:var(${tone})"` : ''}>${v}</div>
+    ${sub ? `<div class="k" style="margin-top:4px">${sub}</div>` : ''}
+  </div>`;
+}
+
+function viewDash() {
+  const uids = repFilterIds();
+  const { from, to } = S.range;
+
+  if (!S.orders.length) {
+    $('#view').innerHTML = `<div class="card"><div class="empty">
+      <span class="spin"></span><br><br>Loading orders…</div></div>`;
+    return;
+  }
+
+  const ord = ordersIn(from, to, uids);
+  const net = ord.reduce((n, o) => n + (o.value || 0), 0);
+  const tgt = targetForRange(from, to, uids);
+  const ach = tgt ? net / tgt : 0;
+  const accountsBilled = new Set(ord.map(o => o.accountId)).size;
+
+  // new vs old, by the account's class at load time
+  let newRev = 0, oldRev = 0;
+  ord.forEach(o => {
+    const a = S.byId[o.accountId];
+    if (a && a.clientClass === 'old') oldRev += o.value || 0; else newRev += o.value || 0;
+  });
+
+  // open pipeline, weighted by the stage's own probability
+  const open = S.opps.filter(o => o.stage < CLOSED && uids.includes(o.owner));
+  const openVal = open.reduce((n, o) => n + (o.expectedValue || 0), 0);
+  const weighted = open.reduce((n, o) => n + (o.expectedValue || 0) * STAGES[o.stage].w, 0);
+
+  // last year, same window
+  const lyOrd = ordersIn(lastYear(from), lastYear(to), uids);
+  const lyNet = lyOrd.reduce((n, o) => n + (o.value || 0), 0);
+  const growth = lyNet ? net / lyNet - 1 : null;
+
+  // SSSG: only clients who bought in BOTH windows
+  const tyBy = {}, lyBy = {};
+  ord.forEach(o => tyBy[o.accountId] = (tyBy[o.accountId] || 0) + (o.value || 0));
+  lyOrd.forEach(o => lyBy[o.accountId] = (lyBy[o.accountId] || 0) + (o.value || 0));
+  const retained = Object.keys(tyBy).filter(id => lyBy[id]);
+  const rTy = retained.reduce((n, id) => n + tyBy[id], 0);
+  const rLy = retained.reduce((n, id) => n + lyBy[id], 0);
+  const sssgSales = rLy ? rTy / rLy - 1 : null;
+  const lyCount = Object.keys(lyBy).length;
+  const sssgAcc = lyCount ? retained.length / lyCount - 1 : null;
+  const lost = Object.keys(lyBy).filter(id => !tyBy[id]);
+  const won = Object.keys(tyBy).filter(id => !lyBy[id]);
+
+  const pct = x => x == null ? '—' : (x >= 0 ? '+' : '') + (x * 100).toFixed(1) + '%';
+  const tone = a => a >= 1 ? '--ok' : a >= 0.8 ? '--warn' : '--bad';
+
+  // ---- stage funnel: magnitude, so one hue light->dark -------------------
+  const stageRows = [0,1,2,3,4].map(i => {
+    const rows = open.filter(o => o.stage === i);
+    return { i, k: STAGES[i].k, n: rows.length,
+             v: rows.reduce((n, o) => n + (o.expectedValue || 0), 0) };
+  });
+  const maxV = Math.max(1, ...stageRows.map(r => r.v));
+  const funnel = stageRows.map(r => {
+    const w = Math.max(r.v ? 2 : 0, r.v / maxV * 100);
+    // light -> dark with depth in the pipeline
+    const l = 78 - (r.i / 4) * 34;
+    return `<button class="fnrow" data-stage="${r.i}">
+      <span class="fnk">${ab(r.k)}</span>
+      <span class="fnbar"><span class="fnfill"
+        style="width:${w}%;background:hsl(340 55% ${l}%)"></span></span>
+      <span class="fnn">${r.n}</span>
+      <span class="fnv">${inr(r.v)}</span>
+    </button>`;
+  }).join('');
+
+  // ---- per rep ------------------------------------------------------------
+  const perRep = uids.map(id => {
+    const mine = ord.filter(o => o.bookedBy === id);
+    const v = mine.reduce((n, o) => n + (o.value || 0), 0);
+    const t = targetForRange(from, to, [id]);
+    return { id, name: userName(id), v, t, a: t ? v / t : 0, n: mine.length };
+  }).filter(r => r.v || r.t).sort((x, y) => y.v - x.v);
+
+  const unowned = ord.filter(o => !o.bookedBy);
+  const unownedVal = unowned.reduce((n, o) => n + (o.value || 0), 0);
+
+  $('#view').innerHTML = `
+    <div class="grid2" style="margin-bottom:14px">
+      ${tile('Net sales', inr(net),
+             `${ord.length} orders · ${accountsBilled} accounts`)}
+      ${tile('Target for this range', inr(tgt),
+             tgt ? `${inr(Math.abs(net - tgt))} ${net >= tgt ? 'ahead' : 'short'}`
+                 : 'no target set')}
+      ${tile('Achievement', tgt ? (ach * 100).toFixed(0) + '%' : '—',
+             'of the target for this range', tone(ach))}
+      ${tile('vs last year', pct(growth), lyNet ? inr(lyNet) + ' then' : 'no orders a year ago',
+             growth == null ? null : (growth >= 0 ? '--ok' : '--bad'))}
+    </div>
+
+    <div class="card">
+      <h2>Open pipeline · ${open.length} deals</h2>
+      <div class="grid2" style="margin-bottom:12px">
+        ${tile('Pipeline value', inr(openVal), 'sum of expected values')}
+        ${tile('Weighted', inr(weighted), 'by stage probability')}
+      </div>
+      <div class="funnel">${funnel}</div>
+      <p class="hint" style="margin-top:10px">Tap a stage to see its deals.
+        ${ab('C4')} and cancelled are excluded — this is what is still open.
+        Deals with no owner are not counted against anyone, so they are not
+        here either.</p>
+    </div>
+
+    <div class="card">
+      <h2>Same-client growth · ${ab('SSSG')}</h2>
+      <div class="row" style="margin-bottom:12px">
+        <button class="chip sssg on" data-b="sales">By sales</button>
+        <button class="chip sssg" data-b="acc">By account count</button>
+      </div>
+      <div id="sssgBody"></div>
+    </div>
+
+    <div class="card">
+      <h2>New and old clients</h2>
+      <div class="splitbar">
+        <span style="width:${net ? newRev / net * 100 : 50}%;background:hsl(340 55% 62%)"></span>
+        <span style="width:${net ? oldRev / net * 100 : 50}%;background:hsl(340 40% 82%)"></span>
+      </div>
+      <div class="row sm" style="margin-top:8px">
+        <div><b>${inr(newRev)}</b> new client
+          <span class="muted">· ${net ? (newRev/net*100).toFixed(0) : 0}%</span></div>
+        <div style="text-align:right"><b>${inr(oldRev)}</b> old client
+          <span class="muted">· ${net ? (oldRev/net*100).toFixed(0) : 0}%</span></div>
+      </div>
+      <p class="hint" style="margin-top:10px">Old means the account ordered before
+        this financial year. It decides the incentive rate, so it is worth a look.</p>
+    </div>
+
+    <div class="card">
+      <h2>By rep</h2>
+      <div class="list">
+        ${perRep.length ? perRep.map(r => `
+          <div class="it" style="cursor:default;align-items:flex-start;
+               flex-direction:column;gap:6px">
+            <div style="display:flex;width:100%;gap:10px;align-items:baseline">
+              <span class="nm">${esc(r.name)}</span>
+              <span class="meta">${inr(r.v)} of ${inr(r.t)} · ${r.n} orders</span>
+            </div>
+            <div class="meter"><span style="width:${Math.min(100, r.a*100)}%;
+              background:var(${tone(r.a)})"></span></div>
+            <div class="sm" style="color:var(${tone(r.a)});font-weight:650">
+              ${r.t ? (r.a*100).toFixed(0) + '%' : 'no target'}</div>
+          </div>`).join('')
+        : '<div class="empty">Nothing booked in this range.</div>'}
+      </div>
+      ${unowned.length ? `<p class="hint" style="margin-top:10px">
+        <b>${inr(unownedVal)}</b> across ${unowned.length} order${unowned.length>1?'s':''}
+        has no rep attached, so it counts toward nobody's target.</p>` : ''}
+    </div>`;
+
+  // SSSG toggle
+  const drawSssg = (basis) => {
+    const body = $('#sssgBody');
+    if (!lyCount) {
+      body.innerHTML = `<div class="empty">No orders in the same window last year,
+        so there is nothing to compare.</div>`;
+      return;
+    }
+    if (basis === 'sales') {
+      body.innerHTML = `
+        <div class="grid2">
+          ${tile('SSSG by sales', pct(sssgSales),
+                 `${retained.length} clients bought in both windows`,
+                 sssgSales == null ? null : (sssgSales >= 0 ? '--ok' : '--bad'))}
+          ${tile('Retained this year', inr(rTy), `${inr(rLy)} from them last year`)}
+        </div>
+        <div class="bridge">
+          <div><span class="muted">Last year</span><b>${inr(lyNet)}</b></div>
+          <div><span class="muted">− Lost clients</span>
+            <b style="color:var(--bad)">${inr(lyNet - rLy)}</b></div>
+          <div><span class="muted">± Same clients</span>
+            <b style="color:var(${rTy >= rLy ? '--ok' : '--bad'})">${
+              (rTy >= rLy ? '+' : '−') + inr(Math.abs(rTy - rLy)).slice(1)}</b></div>
+          <div><span class="muted">+ New clients</span>
+            <b style="color:var(--ok)">${inr(net - rTy)}</b></div>
+          <div><span class="muted">This year</span><b>${inr(net)}</b></div>
+        </div>
+        <p class="hint" style="margin-top:10px">Reads left to right: last year's
+          total, less what walked away, plus or minus how the clients who stayed
+          moved, plus what came in new.</p>`;
+    } else {
+      body.innerHTML = `
+        <div class="grid2">
+          ${tile('SSSG by accounts', pct(sssgAcc),
+                 `${retained.length} of ${lyCount} last-year clients came back`,
+                 sssgAcc == null ? null : (sssgAcc >= 0 ? '--ok' : '--bad'))}
+          ${tile('Lost clients', String(lost.length),
+                 'bought last year, not this')}
+        </div>
+        <div class="bridge">
+          <div><span class="muted">Last year</span><b>${lyCount}</b></div>
+          <div><span class="muted">Retained</span><b>${retained.length}</b></div>
+          <div><span class="muted">+ New</span>
+            <b style="color:var(--ok)">${won.length}</b></div>
+          <div><span class="muted">− Lost</span>
+            <b style="color:var(--bad)">${lost.length}</b></div>
+          <div><span class="muted">This year</span><b>${Object.keys(tyBy).length}</b></div>
+        </div>`;
+    }
+  };
+  drawSssg('sales');
+  $('#view').querySelectorAll('.sssg').forEach(b => b.onclick = () => {
+    $('#view').querySelectorAll('.sssg').forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+    drawSssg(b.dataset.b);
+  });
+
+  // a stage opens its deals
+  $('#view').querySelectorAll('[data-stage]').forEach(b => b.onclick = () => {
+    const i = +b.dataset.stage;
+    const rows = open.filter(o => o.stage === i)
+      .sort((x, y) => (y.expectedValue || 0) - (x.expectedValue || 0));
+    modal(STAGES[i].k + ' · ' + STAGES[i].n, rows.length
+      ? `<div class="list">` + rows.slice(0, 60).map(o => {
+          const a = S.byId[o.accountId] || {};
+          const na = o.nextActionDate ? iso(parseDate(o.nextActionDate)) : null;
+          return `<div class="it" data-go="${o.accountId}">
+            <span class="nm">${esc(a.name || o.name || 'Account')}</span>
+            <span class="meta">${inr(o.expectedValue || 0)} · ${
+              na ? esc(na) : '<span class="req">' + ab('NA') + '</span>'}</span>
+          </div>`;
+        }).join('') + `</div>`
+        + (rows.length > 60 ? `<p class="hint" style="margin-top:8px">
+             Showing the 60 largest of ${rows.length}.</p>` : '')
+      : `<div class="empty">Nothing at this stage.</div>`,
+      m => { m.querySelectorAll('[data-go]').forEach(el => el.onclick = () => {
+        closeModal(); go('log'); setTimeout(() => pick(el.dataset.go), 60);
+      }); return null; });
+  });
 }
 
 /* ------------------------------------------------------- not built yet */
