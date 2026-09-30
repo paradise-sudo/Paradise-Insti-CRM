@@ -1204,7 +1204,7 @@ async function saveLog(){
     const oppData = {
       accountId: account.id, name: account.name, stage: s,
       stageSince: stamp(when),
-      nextActionDate: s < CLOSED ? asDate(val('nad')).toISOString() : null,
+      nextActionDate: s < CLOSED ? stamp(asDate(val('nad'))) : null,
       nextActionType: val('nat') || '',
       lossReason: s === CANCELLED ? val('loss') : null,
       closedAt: s >= CLOSED ? stamp(when) : null

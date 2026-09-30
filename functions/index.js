@@ -71,6 +71,20 @@ async function getConfig() {
   return Object.assign({}, DEFAULT_CONFIG, snap.exists ? snap.data() : {});
 }
 
+/* ------------------------------------------------------------ Indian dates
+   Every date in this system is an Indian calendar date, and Cloud Functions
+   run in UTC. dailyFollowUpCheck fires at 03:30 IST, which is 22:00 UTC the
+   PREVIOUS day, so new Date().toISOString().slice(0,10) returned yesterday -
+   the overdue check ran against the wrong day, every single day.
+
+   Adding the offset and then reading the UTC fields gives the Indian wall
+   clock, which is what every stored date means. */
+const IST_MS = 330 * 60000;
+const istDate  = d => new Date((d ? d.getTime() : Date.now()) + IST_MS)
+  .toISOString().slice(0, 10);
+const istStamp = d => new Date((d ? d.getTime() : Date.now()) + IST_MS)
+  .toISOString().slice(0, 19);
+
 /* --------------------------------------------------------------- utilities */
 const name0 = e => String(e || '').split('@')[0];
 const esc = s => String(s == null ? '' : s)
@@ -356,7 +370,7 @@ exports.onOpportunityWrite = sender()
       changedBy: after.updatedBy || 'system',
       daysInPrevious: daysIn
     });
-    await change.after.ref.update({ stageSince: new Date().toISOString().slice(0, 10) });
+    await change.after.ref.update({ stageSince: istDate() });
 
     // notify once, scoped
     const acct = await db.collection('accounts').doc(after.accountId).get();
@@ -378,7 +392,7 @@ exports.dailyFollowUpCheck = sender()
   .pubsub.schedule('30 3 * * *').timeZone('Asia/Kolkata')
   .onRun(async () => {
     const cfgv = await getConfig();
-    const today = new Date().toISOString().slice(0, 10);
+    const today = istDate();
     const snap = await db.collection('opportunities').where('stage', '<', 5).get();
 
     const byOwner = {};
@@ -420,8 +434,10 @@ exports.monthlyWinback = sender()
     const now = new Date();
     const ly = new Date(now.getFullYear() - 1, now.getMonth(), 1);
     const lyEnd = new Date(now.getFullYear() - 1, now.getMonth() + 1, 0);
-    const from = ly.toISOString().slice(0, 10);
-    const to = lyEnd.toISOString().slice(0, 10);
+    // ly and lyEnd are built from local Y/M/D, so format them the same way
+    // rather than through UTC, which would walk the 1st back to the 31st.
+    const from = istDate(new Date(ly.getTime() + ly.getTimezoneOffset() * 60000));
+    const to   = istDate(new Date(lyEnd.getTime() + lyEnd.getTimezoneOffset() * 60000));
 
     const orders = await db.collection('orders')
       .where('orderDate', '>=', from).where('orderDate', '<=', to).get();
@@ -441,8 +457,7 @@ exports.monthlyWinback = sender()
     const opps = await db.collection('opportunities').where('stage', '<', 5).get();
     opps.forEach(d => open.add(d.data().accountId));
 
-    const due = new Date(Date.now() + cfgv.winbackActionDays * 864e5)
-      .toISOString().slice(0, 10);
+    const due = istDate(new Date(Date.now() + cfgv.winbackActionDays * 864e5));
 
     let made = 0;
     const byOwner = {};
@@ -458,10 +473,10 @@ exports.monthlyWinback = sender()
       }
       await db.collection('opportunities').add({
         accountId, name: acct.data().name, owner, stage: STAGE.C1,
-        stageSince: new Date().toISOString().slice(0, 10),
+        stageSince: istDate(),
         expectedValue: info.value, nextActionDate: due,
         nextActionType: 'Call', temperature: 'Warm',
-        source: 'winback', createdAt: new Date().toISOString(),
+        source: 'winback', createdAt: istStamp(),
         createdBy: 'winback-job'
       });
       (byOwner[owner] = byOwner[owner] || []).push(acct.data().name);
@@ -499,7 +514,7 @@ exports.annualClientAgeing = sender()
       if (count < cfgv.ageingOrdersToPromote) continue;
       batch.update(doc.ref, {
         clientClass: 'old',
-        classEffectiveFrom: new Date().toISOString().slice(0, 10)
+        classEffectiveFrom: istDate()
       });
       promoted++; n++;
       if (n >= 450) { await batch.commit(); batch = db.batch(); n = 0; }
