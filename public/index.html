@@ -152,6 +152,24 @@ grep -c PASTE public/index.html  @media (prefers-color-scheme:dark){
     padding:12px 14px}
   .stat .k{font-size:12px;color:var(--mute);letter-spacing:.02em}
   .stat .v{font-size:22px;font-weight:700;margin-top:3px}
+  /* ---------- admin ---------- */
+  .tgrid{display:grid;grid-template-columns:72px repeat(3,1fr);gap:6px;
+    align-items:center}
+  .tgrid .th{font-size:11.5px;font-weight:700;color:var(--mute);
+    letter-spacing:.02em;text-transform:uppercase}
+  .tgrid .tm{font-size:13px;font-weight:600}
+  .tgrid .fld{margin-bottom:0;text-align:right;padding:9px 10px}
+  /* Four columns squeeze a 7-digit figure into 60px on a small phone. Below
+     430px the month becomes its own full-width row instead, which gives each
+     input about a third of the screen. */
+  @media (max-width:430px){
+    .tgrid{grid-template-columns:repeat(3,1fr);gap:5px}
+    .tgrid .th:first-child{display:none}
+    .tgrid .tm{grid-column:1/-1;margin-top:10px;color:var(--mute);
+      font-size:12px;letter-spacing:.02em;text-transform:uppercase}
+    .tgrid .fld{padding:9px 6px}
+  }
+
   /* ---------- dashboard ---------- */
   .funnel{display:flex;flex-direction:column;gap:2px}
   .fnrow{display:flex;align-items:center;gap:10px;width:100%;padding:8px 6px;
@@ -723,7 +741,7 @@ function go(v){
     b.classList.toggle('on', b.dataset.v === v));
   $('#repChip').style.display = (v==='log'||v==='admin') ? 'none' : '';
   $('#rangeChip').style.display = (v==='log'||v==='admin') ? 'none' : '';
-  ({ log: viewLog, dash: viewDash }[v] || viewSoon)();
+  ({ log: viewLog, dash: viewDash, admin: viewAdmin }[v] || viewSoon)();
   window.scrollTo(0,0);
 }
 
@@ -1507,6 +1525,165 @@ function viewDash() {
         closeModal(); go('log'); setTimeout(() => pick(el.dataset.go), 60);
       }); return null; });
   });
+}
+
+/* ==================================================================== ADMIN
+   Targets, editable. Until now the workbook was the only way to change one,
+   which meant a re-run of the whole seed to move a single number.
+
+   Document ids are predictable - tgt_<userId>_<month>_<bucket> - so a target
+   edited here and a target loaded from the workbook are the SAME document.
+   Were the id a hash, as it was at first, the browser could not reproduce it
+   (no md5) and the two would sit side by side with the later load winning
+   silently. */
+
+const NEW_SHARE = 0.45;   // every one of the 52 rep-months in the sheet splits
+const OLD_SHARE = 0.55;   // exactly 45/55, so that is the default here too
+
+const fyMonths = (startYear) => {
+  const out = [];
+  for (let i = 0; i < 12; i++) {
+    const m = (3 + i) % 12, y = startYear + (3 + i > 11 ? 1 : 0);
+    out.push(`${y}-${String(m + 1).padStart(2, '0')}`);
+  }
+  return out;
+};
+const monthLabel = mk => {
+  const [y, m] = mk.split('-').map(Number);
+  return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][m-1]
+    + '-' + String(y).slice(2);
+};
+
+function viewAdmin() {
+  const reps = S.users.filter(u => u.active !== false && u.role !== 'admin');
+  const sel = S.adminRep || (reps[0] && reps[0].id);
+  S.adminRep = sel;
+
+  $('#view').innerHTML = `
+    <div class="card">
+      <h2>Targets</h2>
+      <div class="row" style="margin-bottom:12px">
+        <div><label for="arep">Whose targets</label>
+          <select id="arep" class="fld">
+            ${reps.map(u => `<option value="${u.id}"${u.id===sel?' selected':''}>
+              ${esc(u.name)}</option>`).join('')}
+          </select></div>
+        <div><label for="afy">Financial year</label>
+          <select id="afy" class="fld">
+            <option value="2026">FY27 · Apr-26 to Mar-27</option>
+            <option value="2025">FY26 · Apr-25 to Mar-26</option>
+          </select></div>
+      </div>
+      <div id="tgtBody"></div>
+    </div>`;
+
+  const draw = () => {
+    const uid = $('#arep').value, fy = +$('#afy').value;
+    const months = fyMonths(fy);
+    const cur = {};
+    S.targets.filter(t => t.scope === 'rep' && t.userId === uid)
+      .forEach(t => { (cur[t.month] = cur[t.month] || {})[t.bucket] = t.amount; });
+
+    $('#tgtBody').innerHTML = `
+      <p class="hint">Type the overall figure and the split follows at
+        45 / 55, which is how every month in the workbook is set. Override
+        either side if you need to.</p>
+      <div class="tgrid">
+        <div class="th">Month</div><div class="th">Overall</div>
+        <div class="th">New</div><div class="th">Old</div>
+        ${months.map(m => {
+          const c = cur[m] || {};
+          return `<div class="tm">${monthLabel(m)}</div>
+            <div><input class="fld tin" data-m="${m}" data-b="overall" inputmode="numeric"
+              value="${c.overall ? Math.round(c.overall) : ''}" placeholder="0"></div>
+            <div><input class="fld tin" data-m="${m}" data-b="new" inputmode="numeric"
+              value="${c.new ? Math.round(c.new) : ''}" placeholder="0"></div>
+            <div><input class="fld tin" data-m="${m}" data-b="old" inputmode="numeric"
+              value="${c.old ? Math.round(c.old) : ''}" placeholder="0"></div>`;
+        }).join('')}
+      </div>
+      <div class="row" style="margin-top:14px;align-items:center">
+        <div class="sm"><b id="tgtSum">—</b> <span class="muted">for the year</span></div>
+        <div style="flex:0 0 auto"><button class="btn" id="tgtSave"
+          style="width:auto;padding:10px 18px">Save targets</button></div>
+      </div>
+      <p id="tgtMsg" class="msg"></p>`;
+
+    const inputs = () => [...$('#tgtBody').querySelectorAll('.tin')];
+    const retotal = () => {
+      const n = inputs().filter(i => i.dataset.b === 'overall')
+        .reduce((a, i) => a + (Number(digits(i.value)) || 0), 0);
+      $('#tgtSum').textContent = inr(n);
+    };
+
+    inputs().forEach(i => {
+      i.oninput = () => {
+        if (i.dataset.b === 'overall') {
+          const v = Number(digits(i.value)) || 0;
+          const row = inputs().filter(x => x.dataset.m === i.dataset.m);
+          const nw = row.find(x => x.dataset.b === 'new');
+          const od = row.find(x => x.dataset.b === 'old');
+          // Rounded so the two halves always add back to the whole.
+          if (nw) nw.value = v ? Math.round(v * NEW_SHARE) : '';
+          if (od) od.value = v ? v - Math.round(v * NEW_SHARE) : '';
+        }
+        retotal();
+      };
+    });
+    retotal();
+
+    $('#tgtSave').onclick = async () => {
+      const b = $('#tgtSave');
+      const rows = [];
+      months.forEach(m => {
+        ['overall','new','old'].forEach(bucket => {
+          const el = inputs().find(x => x.dataset.m === m && x.dataset.b === bucket);
+          rows.push({ m, bucket, amount: Number(digits(el.value)) || 0 });
+        });
+      });
+      // A month whose halves do not add up is almost always a typo, and it
+      // would quietly skew that person's incentive gates for the year.
+      const bad = months.filter(m => {
+        const g = k => rows.find(r => r.m === m && r.bucket === k).amount;
+        return g('overall') && Math.abs(g('new') + g('old') - g('overall')) > 2;
+      });
+      if (bad.length) {
+        msg('tgtMsg', 'New and old do not add up to overall in '
+          + bad.map(monthLabel).join(', ') + '. Fix those before saving.');
+        return;
+      }
+
+      busy(b, 'Saving…');
+      try {
+        const batch = writeBatch(db);
+        rows.forEach(r => {
+          const id = `tgt_${uid}_${r.m}_${r.bucket}`;
+          batch.set(doc(db, 'targets', id), {
+            userId: uid, month: r.m, bucket: r.bucket,
+            amount: r.amount, scope: 'rep', accountName: null,
+            updatedAt: serverTimestamp(), updatedBy: S.me.id
+          }, { merge: true });
+        });
+        await batch.commit();
+
+        // keep the local copy honest so the dashboard reflects it at once
+        rows.forEach(r => {
+          const id = `tgt_${uid}_${r.m}_${r.bucket}`;
+          const ex = S.targets.find(t => t.id === id);
+          if (ex) ex.amount = r.amount;
+          else S.targets.push({ id, userId: uid, month: r.m, bucket: r.bucket,
+                                amount: r.amount, scope: 'rep', accountName: null });
+        });
+        msg('tgtMsg', 'Saved. The dashboard uses these straight away.', 'ok');
+      } catch (e) {
+        msg('tgtMsg', friendly(e, 'Could not save the targets.'));
+      } finally { done(b); }
+    };
+  };
+
+  $('#arep').onchange = draw;
+  $('#afy').onchange = draw;
+  draw();
 }
 
 /* ------------------------------------------------------- not built yet */

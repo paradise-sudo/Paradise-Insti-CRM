@@ -39,6 +39,18 @@ EMAIL = {k: v.strip().lower() for k, v in {
 MANAGER = {'Pradeep': 'Sameer', 'Anushikha': 'Sameer', 'Vishwanath': 'Bashab'}
 # Accounts that count as NEW clients regardless of when they first ordered.
 FORCE_NEW = ('azadengineer', 'jcnm')   # 'Azad Engineer' AND 'Azad Engineering'
+
+
+def tgt_id(owner, month, bucket):
+    """Readable, predictable target id: tgt_<owner>_<month>_<bucket>.
+
+    Deliberately NOT a hash. The Admin screen edits targets in the browser,
+    where md5 is not available, so the app has to be able to construct the
+    same id the seed does. Without that, editing a target in the app and
+    re-running the seed later would leave two documents for the same
+    rep-month-bucket, and whichever loaded last would silently win.
+    """
+    return 'tgt_%s_%s_%s' % (owner, month, bucket)
 ADMIN_EMAIL = 'kumar.ayush@paradisefoodcourt.in'.strip().lower()
 
 # The FY27 workbook is authoritative from this date; history rows on or after
@@ -583,7 +595,7 @@ def load_targets(path):
                 continue        # Ayush's line is the column total, not a target
             matched = next((r for r in REPS if r.lower() == clean.lower()), None)
             if matched:
-                targets.append(dict(id=sid('tgt', matched + mk + bucket),
+                targets.append(dict(id=tgt_id(uid(matched), mk, bucket),
                                     userId=uid(matched), month=mk,
                                     bucket=bucket, amount=round(amt, 2),
                                     scope='rep', accountName=None))
@@ -607,7 +619,7 @@ def load_targets(path):
                     # MSN is its own incentive bucket at a flat 0.3%, neither
                     # new nor old. Filing it under 'old' would misread.
                     b2 = 'msn'
-                targets.append(dict(id=sid('tgt', clean + mk + b2),
+                targets.append(dict(id=tgt_id('acc:' + norm(clean), mk, b2),
                                     userId=None, month=mk, bucket=b2,
                                     amount=round(amt, 2), scope='account',
                                     accountName=clean))
