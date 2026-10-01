@@ -43,6 +43,29 @@ EMAIL = {k: v.strip().lower() for k, v in {
 # see its own follow-ups while Hyderabad could. Same routing for everyone,
 # so she sits outside everyone.  (Ayush, 30-Sep-26)
 MANAGER = {'Pradeep': 'Sameer', 'Vishwanath': 'Bashab'}
+
+# Type of Business, as the DCR spells it. "Pop Up Counter" (126 rows) and
+# "Popup Counter" (113) are one thing typed two ways, and left alone they
+# split the biggest format in the book almost exactly in half.
+BUSINESS_CANON = {
+    'popupcounter': 'Pop Up Counter',
+    'popup':        'Pop Up Counter',
+    'bulkorder':    'Bulk Order',
+    'bulk':         'Bulk Order',
+    'odc':          'ODC',
+    'outdoorcatering': 'ODC',
+    'delivery':     'Delivery',
+    'biryanikit':   'Biryani Kit',
+    'sampling':     'Sampling',
+}
+
+
+def business_of(v):
+    t = str(v or '').strip()
+    if not t:
+        return ''
+    k = re.sub(r'[^a-z0-9]', '', t.lower())
+    return BUSINESS_CANON.get(k, t)
 # Accounts that count as NEW clients regardless of when they first ordered.
 FORCE_NEW = ('azadengineer', 'jcnm')   # 'Azad Engineer' AND 'Azad Engineering'
 
@@ -283,7 +306,7 @@ if os.path.exists(path):
             # named in CUR above and then never read, so every import dropped
             # it. It belongs on the ORDER: it describes what was sold, which
             # can differ order to order on the same account.
-            businessType=str(r[CUR['business']] or '').strip(),
+            businessType=business_of(r[CUR['business']]),
             isRepeat=str(r[CUR['repeat']] or ''),
             industry=str(r[CUR['industry']] or '').strip(),
             lossReason='', source='fy27'))

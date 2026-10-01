@@ -483,8 +483,10 @@ const PAY_STATUS = ['Pending','Received at Store','Received at HO'];
    build_seed named and then never read, so every import dropped it. These
    are a starting list, not gospel: they live in meta/config and are edited
    in Admin, so whatever the workbook actually uses wins. */
-const BUSINESS_DEFAULT = ['Pop-up counter','Bulk order','Delivery',
-                          'Event / ODC','Biryani kit','Sampling','Other'];
+/* The values the DCR actually uses, in order of how often they appear:
+   Bulk Order 256, Pop Up Counter 239, ODC 24. Editable in Admin. */
+const BUSINESS_DEFAULT = ['Bulk Order','Pop Up Counter','ODC','Delivery',
+                          'Biryani Kit','Sampling','Other'];
 const businessTypes = () => {
   const b = cfgDoc().businessTypes;
   return Array.isArray(b) && b.length ? b : BUSINESS_DEFAULT;
