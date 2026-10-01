@@ -5,3 +5,4 @@ seed/source/*.clean.xlsx
 seed/out/
 .firebase/
 *.log
+public/build.json

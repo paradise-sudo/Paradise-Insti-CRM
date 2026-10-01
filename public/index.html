@@ -340,6 +340,8 @@
   <div class="nav" id="nav"></div>
   <div class="dfoot">
     <button class="btn sec" id="signout">Sign out</button>
+    <p id="buildStamp" class="sm muted"
+       style="margin:10px 0 0;font-size:11.5px"></p>
   </div>
 </aside>
 
@@ -817,6 +819,16 @@ $('#newPassword').onkeydown   = e => { if (e.key==='Enter') $('#newPassword2').f
 $('#newPassword2').onkeydown  = e => { if (e.key==='Enter') $('#createAccountBtn').click(); };
 
 $('#signout').onclick = () => signOut(auth).then(()=>location.reload());
+
+/* Which build is this? Written fresh by ship.sh on every deploy, so the
+   question "did my change go out" is answered by looking rather than by
+   guessing - which is exactly what went wrong on 1-Oct, when a pull aborted
+   on a stray local edit and the browser kept serving the build before it. */
+fetch('build.json', { cache:'no-store' })
+  .then(r => r.ok ? r.json() : null)
+  .then(b => { const el = $('#buildStamp');
+    if (el && b) el.textContent = 'Build ' + b.commit + ' \u00b7 ' + b.at; })
+  .catch(() => {});
 
 onAuthStateChanged(auth, async u => {
   if (!u) { $('#gate').style.display=''; $('#app').style.display='none'; return; }

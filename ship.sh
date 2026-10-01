@@ -21,7 +21,25 @@ cd "$(dirname "$0")"
 step () { printf '\n\033[1m=== %s ===\033[0m\n' "$1"; }
 
 step "1/5  Pulling"
+# A stray edit in the working tree aborts the pull, and because set -e stops
+# everything the deploy never runs - so the browser keeps showing yesterday's
+# build and it looks like the fix did not work. Park the edit instead of
+# stopping. Nothing is lost: it goes to the stash, named and dated.
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  TAG="before ship.sh $(date +%F-%H%M)"
+  printf '\033[33mLocal edits found; stashing them as "%s".\033[0m\n' "$TAG"
+  git diff --stat
+  git stash push -u -m "$TAG"
+  printf 'Get them back with:  git stash list  /  git stash show -p stash@{0}\n\n'
+fi
 git pull --ff-only
+
+# A build stamp the app can show, so "am I on the new version" is answerable
+# at a glance instead of by guessing. Gitignored, written fresh each deploy.
+printf '{"commit":"%s","at":"%s","subject":"%s"}\n' \
+  "$(git rev-parse --short HEAD)" \
+  "$(git log -1 --format=%cd --date=format:'%d %b %H:%M')" \
+  "$(git log -1 --format=%s | sed 's/"/\\"/g')" > public/build.json
 
 step "2/5  Deploying hosting, functions and rules"
 firebase deploy --only hosting,functions,firestore:rules --force
