@@ -194,7 +194,7 @@ def open_clean(path):
 # date, rep, region, accountName, connect, acctType, aggregator, spocName,
 # spocPhone, remarks, stage, nextActionDate, nextActionType, temperature,
 # expected, actual, orderDate, invoiceNo, store, hoStatus, isRepeat,
-# industry, lossReason, source
+# businessType, industry, lossReason, source
 rows = []
 
 # --- historical workbooks (one file per rep, different schema) -------------
@@ -279,6 +279,11 @@ if os.path.exists(path):
             invoiceNo=str(r[CUR['invoice']] or '').strip(),
             store=str(r[CUR['store']] or '').strip(),
             hoStatus=str(r[CUR['ho']] or '').strip(),
+            # The DCR's Business column - Pop-up, Bulk order and so on. It was
+            # named in CUR above and then never read, so every import dropped
+            # it. It belongs on the ORDER: it describes what was sold, which
+            # can differ order to order on the same account.
+            businessType=str(r[CUR['business']] or '').strip(),
             isRepeat=str(r[CUR['repeat']] or ''),
             industry=str(r[CUR['industry']] or '').strip(),
             lossReason='', source='fy27'))
@@ -422,6 +427,7 @@ for key, rs in by_account.items():
                 # ordering eight times in a month had its month of billings
                 # compared against one row's forecast.
                 expectedValue=round(x['expected'], 2),
+                businessType=x.get('businessType', ''),
                 store=x['store'], channel='',
                 invoiceNumber=x['invoiceNo'],
                 paymentStatus=x['hoStatus'] or 'Pending',

@@ -440,6 +440,17 @@ const tempTag = k => { const t = tempOf(k); return t
    did not share. */
 const PAY_STATUS = ['Pending','Received at Store','Received at HO'];
 
+/* What kind of business the order was - the DCR's Business column, which
+   build_seed named and then never read, so every import dropped it. These
+   are a starting list, not gospel: they live in meta/config and are edited
+   in Admin, so whatever the workbook actually uses wins. */
+const BUSINESS_DEFAULT = ['Pop-up counter','Bulk order','Delivery',
+                          'Event / ODC','Biryani kit','Sampling','Other'];
+const businessTypes = () => {
+  const b = cfgDoc().businessTypes;
+  return Array.isArray(b) && b.length ? b : BUSINESS_DEFAULT;
+};
+
 /* ----------------------------------------------------------------- helpers */
 const $  = s => document.querySelector(s);
 const esc = s => String(s==null?'':s)
@@ -953,7 +964,7 @@ document.addEventListener('keydown', e => { if (e.key==='Escape') closeDrawer();
 function go(v){
   if (!VIEWS[v] || !VIEWS[v].roles.includes(S.me.role)) v = firstView();
   if (v !== 'log') S.holdLog = false;
-  if (v !== 'admin') { S.splitFlash = null; S.wFlash = null; }
+  if (v !== 'admin') { S.splitFlash = null; S.wFlash = null; S.bizFlash = null; }
   if (v !== 'history') S.histAcc = null;   // don't reopen one client later
   S.view = v;
   $('#vtitle').textContent = VIEWS[v].t;
@@ -1309,10 +1320,17 @@ function stageExtra(){
             <option value="">Pick one</option>
             ${PAY_STATUS.map(p=>`<option>${p}</option>`).join('')}</select></div>
       </div>
-      <p class="hint">Store, invoice number and payment status are all
-        required — the database rejects a closed order without them. Payment
-        status starts blank on purpose, so it is a choice rather than a
-        default.</p>`;
+      <div class="row" style="margin-bottom:12px">
+        <div><label for="btype">Type of business <span class="req">*</span></label>
+          <select id="btype" class="fld">
+            <option value="">Pick one</option>
+            ${businessTypes().map(t=>`<option${
+              opp && opp.businessType === t ? ' selected' : ''}>${esc(t)}</option>`
+            ).join('')}</select></div>
+      </div>
+      <p class="hint">Store, invoice number, payment status and type of
+        business are all required. The last two start blank on purpose, so
+        each is a choice rather than a default.</p>`;
   }
 
   if (s === CANCELLED) {
@@ -1383,6 +1401,9 @@ async function saveLog(){
     if (!Number(digits(val('ov')))) return lmsg('Order value is required to close.','err');
     if (!val('inv')) return lmsg('Invoice number is required to close.','err');
     if (!val('pay')) return lmsg('Payment status is required to close.','err');
+    if (!val('btype'))
+      return lmsg('Say what kind of business this was \u2014 pop-up, bulk order '
+        + 'and so on.','err');
     // firestore.rules refuses an order with an empty store, so catching it
     // here is the difference between a clear message and a permission error.
     if (!val('ostore'))
@@ -1464,6 +1485,7 @@ async function saveLog(){
         // one for all time.
         expectedValue: (opp && opp.expectedValue) || 0,
         store: val('ostore') || '', channel:'app',
+        businessType: val('btype'),
         invoiceNumber: val('inv'), paymentStatus: val('pay'),
         paymentReceivedAt: null, financeApprovedAt: null,
         aggregator: null, commissionPct: 0
@@ -1797,6 +1819,13 @@ function viewDash() {
   const regionSplit = byKey(a => a.region);
   const typeSplit   = byKey(a => a.type);
 
+  /* Pop-up, bulk order, delivery - off the ORDER, not the account, because
+     the same client buys differently from one month to the next. */
+  const bizM = {};
+  ord.forEach(o => { if (o.businessType)
+    bizM[o.businessType] = (bizM[o.businessType] || 0) + (o.value || 0); });
+  const bizSplit = Object.entries(bizM).sort((a,b) => b[1] - a[1]).slice(0, 8);
+
   const actIn = (S.acts || []).filter(a => {
     const d = String(a.loggedAt || '').slice(0, 10);
     return d >= from && d <= to && uids.includes(a.loggedBy);
@@ -1924,6 +1953,13 @@ function viewDash() {
       <div class="card" style="margin:0">
         <h2>Type of account</h2>
         ${bars(typeSplit.map(([k,v]) => [k, v, inr(v)]))}
+      </div>
+      <div class="card" style="margin:0">
+        <h2>Type of business</h2>
+        ${bizSplit.length ? bars(bizSplit.map(([k,v]) => [k, v, inr(v)]))
+          : `<div class="empty">Not recorded on any order in this range.
+             <br><span class="sm">It is captured on every order closed from
+             today, and on history after the next seed rebuild.</span></div>`}
       </div>
       <div class="card" style="margin:0">
         <h2>How the team made contact</h2>
@@ -2169,6 +2205,68 @@ function observedRates(){
     return { i, n: entered.length,
              rate: entered.length ? won.length / entered.length : null };
   });
+}
+
+/* The list reps pick from when closing an order. Mine are a guess at what
+   the DCR's Business column holds; this makes correcting them a 30-second
+   job rather than a code change. */
+function adminBusiness(){
+  const list = businessTypes();
+  const used = {};
+  S.orders.forEach(o => { if (o.businessType)
+    used[o.businessType] = (used[o.businessType] || 0) + 1; });
+  const unknown = Object.keys(used).filter(k => !list.includes(k));
+
+  return `
+    <div class="card">
+      <h2>Type of business</h2>
+      <p class="sm muted" style="margin:-4px 0 10px">What a rep picks from when
+        closing an order. One per line, in the order you want them shown.</p>
+      <textarea id="bizList" class="fld" rows="${Math.max(6, list.length + 1)}"
+        style="font-family:ui-monospace,monospace;font-size:14px"
+        >${esc(list.join('\n'))}</textarea>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn" id="bizSave" style="width:auto;padding:10px 18px">
+          Save list</button>
+        <button class="btn sec" id="bizReset" style="width:auto;padding:10px 18px">
+          Back to the defaults</button>
+      </div>
+      <p id="bizMsg" class="msg${S.bizFlash ? ' ok' : ''}">${
+        S.bizFlash ? esc(S.bizFlash) : ''}</p>
+      ${unknown.length ? `<p class="hint" style="margin-top:10px">
+        <b>${unknown.length}</b> value${unknown.length>1?'s are':' is'} already on
+        orders but not on this list — ${esc(unknown.slice(0,6).join(', '))}${
+        unknown.length>6 ? ' and more' : ''}. Those came from the workbook. Add
+        them here if they are real, and they become pickable.</p>` : ''}
+      ${Object.keys(used).length ? `<p class="hint" style="margin-top:8px">
+        In use: ${esc(Object.entries(used).sort((a,b)=>b[1]-a[1])
+          .slice(0,8).map(([k,n]) => k + ' (' + n + ')').join(' · '))}</p>`
+        : `<p class="hint" style="margin-top:8px">No order carries a type yet.
+           Every order closed from today will, and history after the next seed
+           rebuild.</p>`}
+    </div>`;
+}
+
+function wireBusiness(){
+  const save = async (list, note) => {
+    const b = $('#bizSave'); busy(b, 'Saving…');
+    try {
+      await setDoc(doc(db, 'meta', 'config'),
+        { businessTypes: list, updatedBy: S.me.id, updatedAt: stamp(today()) },
+        { merge: true });
+      S.bizFlash = note; msg('bizMsg', note, 'ok');
+    } catch (e) {
+      S.bizFlash = null; msg('bizMsg', friendly(e, 'Could not save the list.'));
+    } finally { done(b); }
+  };
+  $('#bizSave').onclick = () => {
+    const list = [...new Set($('#bizList').value.split('\n')
+      .map(x => x.trim()).filter(Boolean))];
+    if (!list.length) return msg('bizMsg', 'The list cannot be empty.');
+    save(list, 'Saved. Reps pick from these ' + list.length + ' from now on.');
+  };
+  $('#bizReset').onclick = () =>
+    save(BUSINESS_DEFAULT.slice(), 'Back to the defaults.');
 }
 
 function adminWeights(){
@@ -2669,6 +2767,8 @@ function viewAdmin() {
   $('#afy').onchange = draw;
   draw();
 
+  $('#view').insertAdjacentHTML('beforeend', adminBusiness());
+  wireBusiness();
   $('#view').insertAdjacentHTML('beforeend', adminWeights());
   wireWeights();
   $('#view').insertAdjacentHTML('beforeend', adminSplits());
@@ -3770,6 +3870,7 @@ const EX_SETS = {
     ['Invoice',    o => o.invoiceNumber || ''],
     ['Payment',    o => o.paymentStatus || ''],
     ['Channel',    o => o.channel || ''],
+    ['Type of business', o => o.businessType || ''],
     ['Expected',   o => o.expectedValue || '']] },
   pipeline: { dated:false, cols:[
     ['Account',    o => accName(o.accountId)],
@@ -4488,6 +4589,8 @@ function viewFeed(){
         .join(' · ')}</div>` : ''}
     ${r.order && r.order.creditPending ? `<div class="sm"
       style="color:var(--warn)">Credit split not settled yet</div>` : ''}
+    ${r.order && r.order.businessType
+      ? `<div class="sm"><b>${esc(r.order.businessType)}</b></div>` : ''}
     ${r.order ? `<div class="sm muted">${
       r.order.invoiceNumber ? 'Invoice ' + esc(r.order.invoiceNumber)
                             : '<span class="req">no invoice number</span>'}${

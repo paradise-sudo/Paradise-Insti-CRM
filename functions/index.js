@@ -62,6 +62,8 @@ const DEFAULT_CONFIG = {
   // Weighted-pipeline multipliers, editable in Admin. Nothing server-side
   // uses them today; they live here so meta/config has one documented shape.
   stageWeights: [0.10, 0.25, 0.45, 0.60, 0.80],
+  businessTypes: ['Pop-up counter', 'Bulk order', 'Delivery', 'Event / ODC',
+                  'Biryani kit', 'Sampling', 'Other'],
   slaByStage: [3, 5, 5, 4, 7],
   winbackActionDays: 7,
   handoffSlaHours: 24,
