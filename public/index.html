@@ -448,6 +448,35 @@ const esc = s => String(s==null?'':s)
 const norm = s => String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
 const digits = s => String(s||'').replace(/\D/g,'');
 
+/* Returns a cleaned number, or null if it is not one. A landline is valid:
+   040-44488917 reaches a facilities head more reliably than a personal
+   mobile, and 877 of Sameer's prospect list are reachable only that way.
+   Tolerates +91, a leading 0, spaces and dashes, because a rep typing on a
+   shop floor should not have to care. */
+const STD_CODES = ['040','022','033','011','080','044','020','079','0484',
+                   '0471','0422','0361','0124','0120'];
+function cleanPhone(raw){
+  let d = digits(raw);
+  if (!d) return null;
+  if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
+  if (d.length === 13 && d.startsWith('091')) d = d.slice(3);
+
+  /* STD first, and the order is the whole point. '080 41234567' is eleven
+     digits beginning 0 with an 8 behind it, so a mobile rule that strips the
+     leading zero claims it and hands back 8041234567 - a Bangalore landline
+     silently turned into a mobile that may not exist. It is genuinely
+     ambiguous (mobiles do start 80), and in a B2B list from Hyderabad and
+     Bangalore the STD reading is right far more often. */
+  if ([10,11].includes(d.length) && STD_CODES.some(c => d.startsWith(c))) return d;
+  const withZero = '0' + d;
+  if ([10,11].includes(withZero.length)
+      && STD_CODES.some(c => withZero.startsWith(c))) return withZero;
+
+  if (d.length === 11 && d.startsWith('0') && '6789'.includes(d[1])) d = d.slice(1);
+  if (d.length === 10 && '6789'.includes(d[0])) return d;          // mobile
+  return null;
+}
+
 function inr(n){
   n = Number(n)||0;
   if (Math.abs(n) >= 1e7) return '₹'+(n/1e7).toFixed(2)+' Cr';
@@ -1147,11 +1176,16 @@ function renderLogForm(){
       </p>
 
       ${!ph.phone ? `<div class="row" style="margin-bottom:12px">
-        <div><label>Contact name</label>
+        <div><label for="cname">Contact name <span class="req">*</span></label>
           <input id="cname" class="fld" placeholder="Who you spoke to"></div>
-        <div><label>Contact number</label>
-          <input id="cphone" class="fld" inputmode="tel" placeholder="10 digits"></div>
-      </div>` : ''}
+        <div><label for="cphone">Contact number <span class="req">*</span></label>
+          <input id="cphone" class="fld" inputmode="tel"
+                 placeholder="Mobile or landline with STD"></div>
+      </div>
+      <p class="hint">Both are required the first time, because the workbook
+        carried a ${ab('SPOC')} number on none of its 4,439 rows and search by
+        number has nothing to search until somebody fills it. You will not be
+        asked again on this account.</p>` : ''}
 
       <div class="row" style="margin-bottom:12px">
         <div><label for="atype">What happened <span class="req">*</span></label>
@@ -1322,6 +1356,19 @@ async function saveLog(){
   const remarks = val('remarks');
   if (!remarks) return lmsg('Say what happened — remarks are required.','err');
 
+  /* The contact fields only render when the account has no number on file,
+     so requiring them costs a rep nothing on an account that already has one
+     — and closes the gap on the one that does not. */
+  let newPhone = null;
+  if ($('#cphone')) {
+    if (!val('cname'))
+      return lmsg('Give the name of the person you spoke to.','err');
+    newPhone = cleanPhone(val('cphone'));
+    if (!newPhone)
+      return lmsg('That number does not look right. A 10-digit mobile, or a '
+        + 'landline with its STD code.','err');
+  }
+
   const picked = $('#view').querySelector('.tmp.on');
   const temperature = s < CLOSED && picked ? picked.dataset.temp
     : (opp && opp.temperature) || '';
@@ -1352,11 +1399,10 @@ async function saveLog(){
     const batch = writeBatch(db);
 
     // contact, if the rep filled one in
-    if (val('cphone')) {
-      const ph = digits(val('cphone'));
+    if (newPhone) {
       batch.set(doc(collection(db,'contacts')), {
-        accountId: account.id, name: val('cname') || 'Contact',
-        phone: ph, phoneNormalised: ph, email:'', designation:'',
+        accountId: account.id, name: val('cname'),
+        phone: newPhone, phoneNormalised: newPhone, email:'', designation:'',
         isPrimary: true, createdAt: serverTimestamp(), createdBy: S.me.id
       });
     }
