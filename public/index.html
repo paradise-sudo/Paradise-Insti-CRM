@@ -195,6 +195,13 @@
   .bridge span{display:block;font-size:11.5px;letter-spacing:.02em}
   .bridge b{font-size:15px}
   .chip.sssg{flex:0 0 auto}
+  /* A 20px checkbox is a miss on a phone; the label gives it a real target. */
+  .selbox{display:inline-flex;align-items:center;justify-content:center;
+    flex:none;min-width:30px;min-height:30px;margin:-6px 2px -6px -2px;
+    cursor:pointer}
+  .selbox input{width:17px;height:17px;accent-color:var(--brand);cursor:pointer}
+  .selbar{position:sticky;bottom:10px;z-index:20;border-color:var(--brand);
+    box-shadow:0 6px 20px rgba(16,24,40,.16)}
   /* Split panels: label and figure on one line, bar beneath. No fixed
      columns, so a narrow card shortens the bar instead of clipping the
      number off the right-hand edge. */
@@ -1001,6 +1008,7 @@ document.addEventListener('keydown', e => { if (e.key==='Escape') closeDrawer();
 function go(v){
   if (!VIEWS[v] || !VIEWS[v].roles.includes(S.me.role)) v = firstView();
   if (v !== 'log') S.holdLog = false;
+  if (v !== S.selView) { S.selFlash = null; }
   if (v !== 'admin') {
     S.splitFlash = null; S.wFlash = null; S.bizFlash = null; S.stFlash = null;
   }
@@ -2933,13 +2941,13 @@ function wireMore(rows, render, cap){
   };
 }
 
-function dealRow(o){
+function dealRow(o, pick){
   const na  = o.nextActionDate ? iso(parseDate(o.nextActionDate)) : null;
   const age = daysIn(o);
   const late = na && na < TODAY();
   const handed = o.handedFrom && o.owner !== o.handedFrom;
   return `<div class="it" data-go="${o.accountId}">
-    ${stageTag(o.stage)}${tempTag(o.temperature)}
+    ${pick ? selBox(o.id) : ''}${stageTag(o.stage)}${tempTag(o.temperature)}
     <span class="nm">${esc(accName(o.accountId))}${handed
       ? ` <span class="sm muted">→ ${esc(userName(o.owner))}</span>` : ''}</span>
     <span class="meta">${inr(o.expectedValue || 0)}
@@ -2947,6 +2955,136 @@ function dealRow(o){
       · ${na ? (late ? `<span class="req">${esc(na)}</span>` : esc(na))
              : `<span class="req">${ab('NA')}</span>`}</span>
   </div>`;
+}
+
+/* ======================================================== BULK REASSIGNMENT
+   Tick rows on Pipeline or Win back and move them to another rep in one go.
+   Reassigning 40 deals one at a time through the log screen is the kind of
+   job nobody does, so the deals stay with whoever happened to log them.
+
+   The bar always says who owns the selection NOW, broken down by rep,
+   because "move these 12 to Vishwanath" reads very differently once you can
+   see that 9 of them are currently Sameer's.
+
+   Pipeline moves the OPPORTUNITY's owner, which is what drives whose
+   pipeline a deal appears in. Win back moves the ACCOUNT's owner, because
+   there is no open deal on a dormant account - that is what makes it
+   dormant.                                                                */
+
+const selKey = () => S.view;
+function selSet(){
+  if (S.selView !== selKey()) { S.selView = selKey(); S.sel = []; }
+  return S.sel || (S.sel = []);
+}
+const selHas = id => selSet().includes(id);
+function selToggle(id){
+  const s = selSet(), i = s.indexOf(id);
+  if (i >= 0) s.splice(i, 1); else s.push(id);
+}
+const selClear = () => { S.sel = []; };
+
+/* A checkbox that does not also open the account underneath it. */
+function selBox(id){
+  return `<label class="selbox" onclick="event.stopPropagation()">
+    <input type="checkbox" data-sel="${id}"${selHas(id) ? ' checked' : ''}>
+  </label>`;
+}
+
+function wireSel(redraw){
+  $('#view').querySelectorAll('[data-sel]').forEach(cb => {
+    cb.onclick = e => { e.stopPropagation(); };
+    cb.onchange = e => { e.stopPropagation(); selToggle(cb.dataset.sel); redraw(); };
+  });
+  const all = $('#selAll');
+  if (all) all.onclick = () => { all.dataset.on === '1' ? selClear()
+    : (S.sel = JSON.parse(all.dataset.ids)); redraw(); };
+  const cl = $('#selClear');
+  if (cl) cl.onclick = () => { selClear(); redraw(); };
+}
+
+/* items: [{id, ownerId, value}] for everything currently on screen. */
+function selBar(items, opts){
+  const sel = selSet();
+  const chosen = items.filter(i => sel.includes(i.id));
+  const allOn = chosen.length === items.length && items.length > 0;
+
+  const head = `<div class="card" style="margin-bottom:10px;padding:10px 12px">
+      <label class="selbox" style="display:inline-flex;gap:8px;align-items:center;
+        cursor:pointer;font-size:13px">
+        <input type="checkbox" id="selAll" data-on="${allOn?'1':'0'}"
+          data-ids='${JSON.stringify(items.map(i=>i.id))}'${allOn?' checked':''}>
+        <span>Select all ${items.length}</span></label>
+    </div>`;
+  if (!chosen.length) return head;
+
+  const by = {};
+  chosen.forEach(i => { const k = i.ownerId || '—';
+    by[k] = (by[k] || 0) + 1; });
+  const now = Object.entries(by).sort((a,b) => b[1]-a[1])
+    .map(([k,n]) => (k === '—' ? 'nobody' : esc(userName(k))) + ' ' + n)
+    .join(' · ');
+  const val = chosen.reduce((n,i) => n + (i.value || 0), 0);
+  const reps = S.users.filter(u => u.active !== false && u.role !== 'admin');
+
+  return head + `
+    <div class="card selbar">
+      <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;
+        margin-bottom:10px">
+        <b>${chosen.length} selected</b>
+        <span class="sm muted">${inr(val)}</span>
+        <button class="chip" id="selClear" style="margin-left:auto">Clear</button>
+      </div>
+      <p class="sm muted" style="margin:0 0 10px">Currently with ${now}</p>
+      <div class="row">
+        <div><label for="selTo">Move to</label>
+          <select id="selTo" class="fld">
+            <option value="">Pick a rep</option>
+            ${reps.map(u => `<option value="${u.id}">${esc(u.name)}</option>`).join('')}
+          </select></div>
+        <div style="flex:0 0 auto"><button class="btn" id="selGo"
+          style="width:auto;padding:11px 18px">${esc(opts.verb)}</button></div>
+      </div>
+      <p id="selMsg" class="msg"></p>
+      <p class="hint" style="margin-top:8px">${esc(opts.hint)}</p>
+    </div>`;
+}
+
+/* Writes the move. `field` is the collection and what owning means there. */
+async function selAssign(chosen, to, col, redraw){
+  const btn = $('#selGo'); busy(btn, 'Moving…');
+  try {
+    let done_ = 0;
+    for (let i = 0; i < chosen.length; i += 400) {
+      const batch = writeBatch(db);
+      chosen.slice(i, i + 400).forEach(x => batch.update(doc(db, col, x.id),
+        { owner: to, updatedBy: S.me.id, reassignedAt: stamp(today()) }));
+      await batch.commit();
+      done_ += Math.min(400, chosen.length - i);
+    }
+    selClear();
+    S.selFlash = done_ + (col === 'opportunities' ? ' deal' : ' account')
+      + (done_ === 1 ? '' : 's') + ' moved to ' + userName(to) + '.';
+    redraw();
+  } catch (e) {
+    msg('selMsg', /permission/i.test(e.message || '')
+      ? 'Firestore refused that. Only an admin, or the current owner, may hand '
+        + 'an account to somebody else.'
+      : friendly(e, 'Could not move them.'));
+  } finally { done(btn); }
+}
+
+function wireSelAssign(items, col, redraw){
+  const go = $('#selGo');
+  if (!go) return;
+  go.onclick = () => {
+    const to = $('#selTo').value;
+    if (!to) return msg('selMsg', 'Pick who they are moving to.');
+    const chosen = items.filter(i => selSet().includes(i.id));
+    const already = chosen.filter(i => i.ownerId === to).length;
+    if (already === chosen.length)
+      return msg('selMsg', userName(to) + ' already owns all of those.');
+    selAssign(chosen, to, col, redraw);
+  };
 }
 
 /* ================================================================ PIPELINE
@@ -3018,13 +3156,23 @@ function viewPipeline(){
 
     <div class="card">
       <h2>Deals</h2>
-      ${rows.length ? capped(rows, dealRow)
+      ${selBar(rows.map(o => ({ id:o.id, ownerId:o.owner,
+                                value:o.expectedValue || 0 })),
+        { verb:'Move these deals', hint:'Moves who the deal belongs to, which '
+          + 'is what decides whose pipeline it shows in. The account stays '
+          + 'where it is.' })}
+      ${rows.length ? capped(rows, o => dealRow(o, true))
         : '<div class="empty">Nothing open matches that.</div>'}
       <p class="hint" style="margin-top:10px">Value · days in the current stage ·
         next action. A red date is overdue. Tap a row to log against it.</p>
+      ${S.selFlash ? `<p class="msg ok">${esc(S.selFlash)}</p>` : ''}
     </div>`;
 
-  wireRows(); wireMore(rows, dealRow);
+  wireRows(); wireMore(rows, o => dealRow(o, true));
+  wireSel(viewPipeline);
+  wireSelAssign(rows.map(o => ({ id:o.id, ownerId:o.owner,
+                                 value:o.expectedValue || 0 })),
+                'opportunities', viewPipeline);
   $('#view').querySelectorAll('[data-st]').forEach(b => b.onclick = () => {
     S.pipeStage = +b.dataset.st; viewPipeline();
   });
@@ -3239,6 +3387,7 @@ function viewWinback(){
   const untouched = rows.filter(r => !openIds.has(r.id));
 
   const row = r => `<div class="it" data-go="${r.id}">
+    ${selBox(r.id)}
     <span class="nm">${esc(accName(r.id))}</span>
     <span class="meta">${inr(r.lost)} · last ${esc(r.last)}
       ${openIds.has(r.id) ? '· <span style="color:var(--c1)">in pipeline</span>' : ''}</span>
@@ -3265,13 +3414,20 @@ function viewWinback(){
 
     <div class="card">
       <h2>Worth the call, biggest first</h2>
+      ${selBar(rows.map(r => ({ id:r.id, ownerId:r.owner, value:r.lost })),
+        { verb:'Hand these over', hint:'Moves who owns the account. Firestore '
+          + 'only lets an admin, or the account\u2019s current owner, do this.' })}
       ${rows.length ? capped(rows, row)
         : '<div class="empty">Nobody has gone quiet. Unlikely, but good.</div>'}
       <p class="hint" style="margin-top:10px">Value is what the account spent
         before this financial year. Tap to open it and log a call.</p>
+      ${S.selFlash ? `<p class="msg ok">${esc(S.selFlash)}</p>` : ''}
     </div>`;
 
   wireRows(); wireMore(rows, row);
+  wireSel(viewWinback);
+  wireSelAssign(rows.map(r => ({ id:r.id, ownerId:r.owner, value:r.lost })),
+                'accounts', viewWinback);
   $('#view').querySelectorAll('[data-wb]').forEach(b => b.onclick = () => {
     S.wbMonths = +b.dataset.wb; viewWinback();
   });
