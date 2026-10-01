@@ -464,6 +464,30 @@ const businessTypes = () => {
   return Array.isArray(b) && b.length ? b : BUSINESS_DEFAULT;
 };
 
+/* The stores an invoice can be punched at. Built from the orders themselves -
+   38 distinct names across the imported data - merged with anything set in
+   Admin, commonest first so the usual suspects are one keystroke away.
+   Deliberately NOT a closed dropdown: a rep standing in a store that opened
+   last week must still be able to log the order. */
+function storeList(){
+  const n = {};
+  S.orders.forEach(o => {
+    const v = String(o.store || '').trim();
+    if (v) n[v] = (n[v] || 0) + 1;
+  });
+  (cfgDoc().stores || []).forEach(v => { if (v && !(v in n)) n[v] = 0; });
+  return Object.keys(n).sort((a, b) => (n[b] - n[a]) || a.localeCompare(b));
+}
+
+/* "gachibowli" and "Gachibowli" are one store. Typed free-hand they would be
+   two, and every store-wise report would quietly split in half. */
+function canonStore(v){
+  const t = String(v || '').trim();
+  if (!t) return '';
+  const k = norm(t);
+  return storeList().find(s => norm(s) === k) || t;
+}
+
 /* ----------------------------------------------------------------- helpers */
 const $  = s => document.querySelector(s);
 const esc = s => String(s==null?'':s)
@@ -977,7 +1001,9 @@ document.addEventListener('keydown', e => { if (e.key==='Escape') closeDrawer();
 function go(v){
   if (!VIEWS[v] || !VIEWS[v].roles.includes(S.me.role)) v = firstView();
   if (v !== 'log') S.holdLog = false;
-  if (v !== 'admin') { S.splitFlash = null; S.wFlash = null; S.bizFlash = null; }
+  if (v !== 'admin') {
+    S.splitFlash = null; S.wFlash = null; S.bizFlash = null; S.stFlash = null;
+  }
   if (v !== 'history') S.histAcc = null;   // don't reopen one client later
   S.view = v;
   $('#vtitle').textContent = VIEWS[v].t;
@@ -1322,8 +1348,11 @@ function stageExtra(){
             value="${opp && opp.expectedValue ? Math.round(opp.expectedValue) : ''}"></div>
         <div><label for="ostore">Store the invoice was punched at
           <span class="req">*</span></label>
-          <input id="ostore" class="fld"
-                 placeholder="Which store raised it"></div>
+          <input id="ostore" class="fld" list="storeOpts"
+                 autocomplete="off" autocapitalize="words"
+                 placeholder="Start typing \u2014 or a new store">
+          <datalist id="storeOpts">${storeList()
+            .map(s => `<option value="${esc(s)}">`).join('')}</datalist></div>
       </div>
       <div class="row" style="margin-bottom:12px">
         <div><label for="inv">Invoice number <span class="req">*</span></label>
@@ -1497,7 +1526,7 @@ async function saveLog(){
         // because an account that reorders has a forecast per order and not
         // one for all time.
         expectedValue: (opp && opp.expectedValue) || 0,
-        store: val('ostore') || '', channel:'app',
+        store: canonStore(val('ostore')), channel:'app',
         businessType: val('btype'),
         invoiceNumber: val('inv'), paymentStatus: val('pay'),
         paymentReceivedAt: null, financeApprovedAt: null,
@@ -2288,6 +2317,71 @@ function wireBusiness(){
     save(BUSINESS_DEFAULT.slice(), 'Back to the defaults.');
 }
 
+/* The store master. Seeded from whatever the orders already contain, so it
+   starts correct rather than empty, and editable because 38 names arrived
+   from a workbook and a few of them want renaming. */
+function adminStores(){
+  const used = {};
+  S.orders.forEach(o => { const v = String(o.store||'').trim();
+    if (v) used[v] = (used[v] || 0) + 1; });
+  const list = storeList();
+
+  /* Names that differ only by case or punctuation are the same store typed
+     twice, and they split every store-wise figure in half. */
+  const seen = {};
+  const clash = [];
+  Object.keys(used).forEach(v => {
+    const k = norm(v);
+    if (seen[k] && seen[k] !== v) clash.push([seen[k], v]);
+    else seen[k] = v;
+  });
+
+  return `
+    <div class="card">
+      <h2>Stores</h2>
+      <p class="sm muted" style="margin:-4px 0 10px">What a rep sees when they
+        type into “Store the invoice was punched at”. The list starts from
+        the stores already on orders; edit it to rename or add. A rep can
+        still type a store that is not here — a new outlet must not block
+        an order.</p>
+      <textarea id="storeListBox" class="fld" rows="10"
+        style="font-family:ui-monospace,monospace;font-size:14px"
+        >${esc(list.join('\n'))}</textarea>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn" id="stSave" style="width:auto;padding:10px 18px">
+          Save list</button>
+      </div>
+      <p id="stMsg" class="msg${S.stFlash ? ' ok' : ''}">${
+        S.stFlash ? esc(S.stFlash) : ''}</p>
+      ${clash.length ? `<p class="hint" style="margin-top:10px;color:var(--warn)">
+        Same store, spelled two ways on existing orders:
+        ${clash.slice(0,5).map(c => esc(c[0]) + ' / ' + esc(c[1])).join(' · ')}.
+        Every store-wise figure is split between them.</p>` : ''}
+      <p class="hint" style="margin-top:8px">${Object.keys(used).length}
+        store${Object.keys(used).length===1?'':'s'} appear on orders. Busiest:
+        ${esc(Object.entries(used).sort((a,b)=>b[1]-a[1]).slice(0,5)
+          .map(([k,n]) => k + ' (' + n + ')').join(' · '))}</p>
+    </div>`;
+}
+
+function wireStores(){
+  $('#stSave').onclick = async () => {
+    const list = [...new Set($('#storeListBox').value.split('\n')
+      .map(x => x.trim()).filter(Boolean))];
+    if (!list.length) return msg('stMsg', 'The list cannot be empty.');
+    const b = $('#stSave'); busy(b, 'Saving…');
+    try {
+      await setDoc(doc(db, 'meta', 'config'),
+        { stores: list, updatedBy: S.me.id, updatedAt: stamp(today()) },
+        { merge: true });
+      S.stFlash = 'Saved. ' + list.length + ' stores offered from now on.';
+      msg('stMsg', S.stFlash, 'ok');
+    } catch (e) {
+      S.stFlash = null; msg('stMsg', friendly(e, 'Could not save the list.'));
+    } finally { done(b); }
+  };
+}
+
 function adminWeights(){
   const obs = observedRates();
   const sample = Math.max(0, ...obs.map(o => o.n));
@@ -2786,6 +2880,8 @@ function viewAdmin() {
   $('#afy').onchange = draw;
   draw();
 
+  $('#view').insertAdjacentHTML('beforeend', adminStores());
+  wireStores();
   $('#view').insertAdjacentHTML('beforeend', adminBusiness());
   wireBusiness();
   $('#view').insertAdjacentHTML('beforeend', adminWeights());
