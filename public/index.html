@@ -4094,11 +4094,21 @@ function drawPreview(){
         ${tile('Already on file', dupe.length.toLocaleString('en-IN'),
                'same number, same account — skipped')}
         ${tile('Cannot be written', bad.length.toLocaleString('en-IN'),
-               'listed below', bad.length ? '--bad' : '--ok')}
+               'see Rejected, further down', bad.length ? '--bad' : '--ok')}
       </div>
-      ${fresh.length ? capped(fresh, row, 15) : ''}
+      ${fresh.length ? `<h2 style="margin-top:4px">These ${
+        fresh.length.toLocaleString('en-IN')} will go in</h2>`
+        + capped(fresh, row, 15) : ''}
       ${bad.length ? `
-        <h2 style="margin-top:16px">Rejected rows</h2>
+        <h2 style="margin-top:16px">Rejected · ${
+          bad.length.toLocaleString('en-IN')} rows</h2>
+        ${S.upKind === 'contacts'
+          && bad.filter(x => /no account/.test(x.why)).length > bad.length / 2
+          ? `<p class="sm" style="margin:-4px 0 10px;color:var(--warn)">Most of
+             these are refused because a contact has to belong to an account
+             that already exists. If this is a cold list it belongs under
+             <b>Prospects</b> — switch above and upload the same file, and
+             all of it goes in.</p>` : ''}
         <div class="list">${bad.slice(0,15).map(b =>
           `<div class="it" style="cursor:default">
             <span class="nm">Row ${b.row}</span>
