@@ -195,6 +195,20 @@
   .bridge span{display:block;font-size:11.5px;letter-spacing:.02em}
   .bridge b{font-size:15px}
   .chip.sssg{flex:0 0 auto}
+  /* Column mapping. The old row was an .it, which ellipsises its label to fit
+     the control beside it - on a phone that left "Ph...", "E...", "Prim...",
+     so you could not tell which field you were mapping. Label above, control
+     below, full width. Side by side only once there is room for both. */
+  .maprow{padding:11px 12px;border-bottom:1px solid var(--line);background:var(--card)}
+  .maprow:last-child{border-bottom:0}
+  .maprow .mapk{font-weight:600;font-size:13.5px;margin-bottom:6px}
+  .maprow .mapk .sm{font-weight:400;margin-top:2px}
+  .maprow .fld{margin:0;width:100%}
+  @media (min-width:620px){
+    .maprow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);
+      gap:12px;align-items:center}
+    .maprow .mapk{margin-bottom:0}
+  }
   /* A 20px checkbox is a miss on a phone; the label gives it a real target. */
   .selbox{display:inline-flex;align-items:center;justify-content:center;
     flex:none;min-width:30px;min-height:30px;margin:-6px 2px -6px -2px;
@@ -3644,41 +3658,65 @@ const UPLOADS = {
 
 /* Guess the mapping from the header row. Deliberately generous - the whole
    point is that Ayush does not rename columns before uploading. */
+/* Guess the mapping from the header row. Deliberately generous - the whole
+   point is that Ayush does not rename columns before uploading - but three
+   rules keep generosity from becoming wrong:
+
+   1. A header, once taken, cannot be taken again. Without this, Contact name
+      matched ORGANIZATION NAME, because "organizationname" contains "name"
+      and it came first in the file.
+   2. Aliases are tried IN ORDER, so a specific one beats a general one.
+      "PHONE (CLEANED)" has to win over "MOBILE NO" - the raw column holds
+      040-44488917 and the validator would reject half of it.
+   3. The loose pass matches whole words only. "PHONE TYPE" contains "type",
+      which is how Industry ended up mapped to it.                          */
 function guessMap(headers, cols){
-  const norm2 = s => String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+  const norm2 = s => String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+  const words = s => norm2(s).split(' ').filter(Boolean);
+  const squash = s => norm2(s).replace(/ /g,'');
+
   const ALIAS = {
-    account:['account','acname','acname','accountname','company','client',
-             'companyname','organisation','organization'],
-    company:['company','companyname','account','accountname','organisation',
-             'organization','client'],
-    name:['name','contactname','spoc','spocname','person','fullname',
-          'firstname','contact'],
-    phone:['phone','mobile','number','spocnumber','contactnumber','phonenumber',
-           'mobilenumber','cell','whatsapp'],
-    email:['email','emailaddress','mail','workemail'],
-    designation:['designation','title','jobtitle','role','position'],
+    account:['accountname','acname','account','organizationname','organization',
+             'companyname','company','client','organisation'],
+    company:['organizationname','organization','companyname','company',
+             'accountname','account','client','organisation'],
+    name:['contactpersons','contactperson','contactname','spocname','spoc',
+          'personname','fullname','person','name'],
+    phone:['phonecleaned','cleanedphone','mobileno','mobilenumber','mobile',
+           'contactnumber','phonenumber','spocnumber','whatsapp','phone','number'],
+    email:['emailid','contactdetailsemailid','emailaddress','email','mail'],
+    designation:['designation','jobtitle','title','role','position'],
     isPrimary:['primary','isprimary','main'],
     notes:['notes','remarks','comment','comments'],
-    region:['region','city','location','branch'],
-    industry:['industry','sector','vertical','type'],
-    source:['source','channel','listsource','origin']
+    region:['region','city','location','address','branch'],
+    industry:['industry','sector','vertical','segment'],
+    source:['source','listsource','channel','origin']
   };
+
+  const taken = new Set();
   const out = {};
+  cols.forEach(c => out[c.k] = -1);
+
   cols.forEach(c => {
-    const want = ALIAS[c.k] || [c.k];
-    let hit = -1;
-    headers.forEach((h, i) => {
-      if (hit >= 0) return;
-      const n = norm2(h);
-      if (!n) return;
-      if (want.includes(n)) hit = i;
-    });
-    if (hit < 0) headers.forEach((h, i) => {       // looser second pass
-      if (hit >= 0) return;
-      const n = norm2(h);
-      if (n && want.some(w => n.includes(w) || w.includes(n))) hit = i;
-    });
-    out[c.k] = hit;
+    const want = ALIAS[c.k] || [squash(c.t)];
+    // pass 1: a header that IS the alias, most specific alias first
+    for (const w of want) {
+      const i = headers.findIndex((h,ix) => !taken.has(ix) && squash(h) === w);
+      if (i >= 0) { out[c.k] = i; taken.add(i); return; }
+    }
+    // pass 2: the alias appears as a whole word in the header
+    for (const w of want) {
+      const i = headers.findIndex((h,ix) => !taken.has(ix)
+        && words(h).includes(w));
+      if (i >= 0) { out[c.k] = i; taken.add(i); return; }
+    }
+    // pass 3: the header contains the alias, which is where a wrong guess
+    // becomes likely - so only for aliases long enough to mean something
+    for (const w of want) {
+      if (w.length < 6) continue;
+      const i = headers.findIndex((h,ix) => !taken.has(ix) && squash(h).includes(w));
+      if (i >= 0) { out[c.k] = i; taken.add(i); return; }
+    }
   });
   return out;
 }
@@ -3964,16 +4002,15 @@ function drawMapping(){
     <div class="card" style="margin:12px 0 0;background:var(--bg)">
       <h2>Check the mapping · ${body.length.toLocaleString('en-IN')} rows</h2>
       <div class="list">
-        ${spec.cols.map(c => `<div class="it" style="cursor:default">
-          <span class="nm">${esc(c.t)}${c.req ? ' <span class="req">*</span>' : ''}
-            ${c.hint ? `<br><span class="sm muted">${esc(c.hint)}</span>` : ''}</span>
-          <span class="meta" style="margin-left:auto">
-            <select class="fld" data-map="${c.k}" style="margin:0;min-width:150px">
-              <option value="-1">— not in my file —</option>
-              ${headers.map((h,i) => `<option value="${i}"${
-                map[c.k] === i ? ' selected' : ''}>${esc(h || 'Column ' + (i+1))}</option>`
-              ).join('')}
-            </select></span></div>`).join('')}
+        ${spec.cols.map(c => `<div class="maprow">
+          <div class="mapk">${esc(c.t)}${c.req ? ' <span class="req">*</span>' : ''}
+            ${c.hint ? `<div class="sm muted">${esc(c.hint)}</div>` : ''}</div>
+          <select class="fld" data-map="${c.k}">
+            <option value="-1">— not in my file —</option>
+            ${headers.map((h,i) => `<option value="${i}"${
+              map[c.k] === i ? ' selected' : ''}>${esc(h || 'Column ' + (i+1))}</option>`
+            ).join('')}
+          </select></div>`).join('')}
       </div>
       <button class="btn" id="upPrev" style="width:auto;padding:10px 18px;
         margin-top:12px">Preview what will be written</button>
