@@ -195,6 +195,19 @@
   .bridge span{display:block;font-size:11.5px;letter-spacing:.02em}
   .bridge b{font-size:15px}
   .chip.sssg{flex:0 0 auto}
+  /* Split panels: label and figure on one line, bar beneath. No fixed
+     columns, so a narrow card shortens the bar instead of clipping the
+     number off the right-hand edge. */
+  .barset{display:flex;flex-direction:column;gap:9px}
+  .barrow{min-width:0}
+  .barlab{display:flex;gap:8px;align-items:baseline;margin-bottom:4px;
+    font-size:12.5px}
+  .barlab span{min-width:0;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap;font-weight:500}
+  .barlab b{margin-left:auto;flex:none;font-variant-numeric:tabular-nums}
+  .bartrack,.barset .bartrack{display:block;width:100%;height:8px;
+    background:var(--bg);border-radius:4px;overflow:hidden}
+  .barfill{display:block;height:100%;border-radius:0 4px 4px 0}
   /* Tables carry six or seven columns. On a phone they scroll sideways
      inside their own card rather than squeezing every figure to 30px. */
   table.dt{width:100%;border-collapse:collapse;font-size:12.5px;
@@ -1667,16 +1680,22 @@ function bars(items, hue){
   hue = hue == null ? 340 : hue;
   const mx = Math.max(1, ...items.map(i => Math.abs(i[1])));
   if (!items.some(i => i[1])) return '<div class="empty">Nothing in range.</div>';
-  return `<div class="funnel">` + items.map((it, n) => {
+  /* Label and value on their own line, bar underneath at full width. The
+     previous layout put all three side by side on fixed 96px and 76px
+     columns, which needs about 230px of card to fit - and these cards sit
+     five across in a grid whose minimum is 220px, so the value was being
+     clipped and long labels ellipsised to nothing. Nothing here has a fixed
+     width any more, so it holds at any card size. */
+  return `<div class="barset">` + items.map((it, n) => {
     const l = 78 - (items.length > 1 ? n / (items.length - 1) : 0) * 34;
-    return `<div class="fnrow" style="cursor:default">
-      <span class="fnk" style="flex:0 0 96px;font-weight:500;font-size:12px;
-        overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-        title="${esc(it[0])}">${esc(it[0])}</span>
-      <span class="fnbar"><span class="fnfill" style="width:${
+    return `<div class="barrow">
+      <div class="barlab">
+        <span title="${esc(it[0])}">${esc(it[0])}</span>
+        <b>${it[2]}</b>
+      </div>
+      <span class="bartrack"><span class="barfill" style="width:${
         Math.max(it[1] ? 2 : 0, Math.abs(it[1]) / mx * 100)}%;
         background:hsl(${hue} 55% ${l}%)"></span></span>
-      <span class="fnv">${it[2]}</span>
     </div>`;
   }).join('') + `</div>`;
 }
