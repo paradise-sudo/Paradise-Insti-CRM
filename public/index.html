@@ -4379,6 +4379,183 @@ function wireExport(uids){
   };
 }
 
+/* ------------------------------------------------- the calculator workbook
+   A live Excel model, not a printout of the answer. Every payout is a
+   formula over the order rows and the targets, and the rates sit in seven
+   cells at the top - change the new-client rate and the whole sheet moves.
+
+   Why it matters that these are formulas: an incentive number somebody
+   cannot take apart is a number they will argue with. This one opens, and
+   each payout traces back through achievement and band to the orders that
+   earned it, named and dated.
+
+   The formula strings here are the ones proved against LibreOffice before
+   they were written in: 140 formulas, no errors, and every payout equal to
+   the rupee to what calculateIncentive returns.
+
+   Admin only - it carries everybody's pay - which is enforced by the
+   payload rather than by hiding a button: d.team only comes back for an
+   admin, so a rep's payload cannot build this.                           */
+
+const ORD_SHEET = 'Closed orders';
+const Q = "'" + ORD_SHEET + "'";
+
+function incentiveRows(month){
+  const out = [];
+  S.orders.forEach(o => {
+    if (!String(o.orderDate || '').startsWith(month)) return;
+    const split = o.creditSplit
+      || (o.bookedBy ? { [o.bookedBy]: 1 } : null);
+    if (!split) return;
+    const a = S.byId[o.accountId] || {};
+    const msn = /msn/i.test(a.nameNormalised || a.name || '');
+    const bucket = msn ? 'MSN' : (a.clientClass === 'old' ? 'Old' : 'New');
+    Object.keys(split).forEach(uid => {
+      const share = split[uid] || 0;
+      if (!share) return;
+      out.push({ date: String(o.orderDate).slice(0,10),
+        account: a.name || '', rep: userName(uid), share,
+        value: o.value || 0, bucket, store: o.store || '',
+        invoice: o.invoiceNumber || '', pay: o.paymentStatus || '',
+        biz: o.businessType || '' });
+    });
+  });
+  return out.sort((x,y) => x.rep.localeCompare(y.rep) || x.date.localeCompare(y.date));
+}
+
+async function downloadCalculator(d){
+  const X = await needXlsx();
+  const month = d.month;
+  const rows = incentiveRows(month);
+  const tgts = S.targets.filter(t => t.month === month && t.scope === 'rep'
+    && (t.bucket === 'new' || t.bucket === 'old'))
+    .map(t => ({ rep: userName(t.userId),
+                 bucket: t.bucket === 'new' ? 'New' : 'Old',
+                 amount: t.amount || 0 }));
+  const reps = [...new Set(rows.map(r => r.rep).concat(tgts.map(t => t.rep)))]
+    .filter(Boolean).sort();
+  if (!reps.length) throw new Error('No closed orders or targets in ' + month + '.');
+
+  const M = '#,##0;(#,##0);-', P1 = '0.0%', P0 = '0%';
+  const f  = s => ({ t:'n', f:s });
+  const fp = (s,z) => ({ t:'n', f:s, z });
+
+  /* ---- Closed orders ---- */
+  const oA = [['Date','Account','Rep','Credit %','Order value','Credited value',
+               'Bucket','Store','Invoice','Payment','Type of business']];
+  rows.forEach((r,i) => {
+    const R = i + 2;
+    oA.push([r.date, r.account, r.rep, { v:r.share, t:'n', z:P0 },
+             { v:r.value, t:'n', z:M }, fp('D'+R+'*E'+R, M),
+             r.bucket, r.store, r.invoice, r.pay, r.biz]);
+  });
+  const nR = rows.length + 1;
+  oA.push(['','','','Total', fp('SUM(E2:E'+nR+')',M), fp('SUM(F2:F'+nR+')',M)]);
+  const wsO = X.utils.aoa_to_sheet(oA);
+  wsO['!cols'] = [12,34,13,9,14,15,9,22,20,18,18].map(w => ({ wch:w }));
+  wsO['!autofilter'] = { ref: 'A1:K' + nR };
+  wsO['!freeze'] = { xSplit:'0', ySplit:'1' };
+
+  /* ---- Targets ---- */
+  const tA = [['Rep','Bucket','Target']];
+  tgts.forEach(t => tA.push([t.rep, t.bucket, { v:t.amount, t:'n', z:M }]));
+  const wsT = X.utils.aoa_to_sheet(tA);
+  wsT['!cols'] = [16,10,14].map(w => ({ wch:w }));
+
+  /* ---- Calculator ---- */
+  const A = [];
+  const put = (r,c,v) => { (A[r-1] = A[r-1] || [])[c-1] = v; };
+  put(1,1,'Incentive calculator');
+  put(2,1,'Month');     put(2,2,month);
+  put(3,1,'Generated'); put(3,2,iso(today()) + ' by ' + (S.me.name || ''));
+  put(5,1,'Change any figure in column B below and every number recalculates. '
+        + 'The payouts are formulas over the two other sheets, not typed-in results.');
+  put(7,1,'Rates and gates');
+  const CF = [['New client rate','rateNew',P1], ['Old client rate','rateOld',P1],
+              ['MSN rate','rateMsn',P1], ['New: pays from','floor',P0],
+              ['New: banded up to','cap',P0], ['Old: pays from','gateOld',P0],
+              ["Head's share of the collective",'headShare',P0]];
+  const ref = {};
+  CF.forEach(([label,key,z],i) => {
+    const R = 8 + i;
+    put(R,1,label);
+    put(R,2,{ v: d.config[key], t:'n', z });
+    ref[key] = '$B$' + R;
+  });
+
+  const TOP = 8 + CF.length + 1;             // 'Per rep' heading
+  put(TOP,1,'Per rep');
+  ['Rep','New revenue','New target','New ach','Band','New payout',
+   'Old revenue','Old target','Old ach','Old payout',
+   'MSN revenue','MSN payout','Total payout']
+    .forEach((h,j) => put(TOP+1, j+1, h));
+
+  const first = TOP + 2;
+  reps.forEach((rep,i) => {
+    const R = first + i, q = '$A$' + R;
+    put(R,1,rep);
+    put(R,2, fp('SUMIFS('+Q+'!$F:$F,'+Q+'!$C:$C,'+q+','+Q+'!$G:$G,"New")', M));
+    put(R,3, fp('SUMIFS(Targets!$C:$C,Targets!$A:$A,'+q+',Targets!$B:$B,"New")', M));
+    put(R,4, fp('IFERROR(B'+R+'/C'+R+',0)', P1));
+    put(R,5, fp('IF(C'+R+'=0,0,MIN(D'+R+','+ref.cap+'))', P1));
+    put(R,6, fp('IF(OR(C'+R+'=0,D'+R+'<'+ref.floor+'),0,ROUND(B'+R+'*'+ref.rateNew+'*E'+R+',0))', M));
+    put(R,7, fp('SUMIFS('+Q+'!$F:$F,'+Q+'!$C:$C,'+q+','+Q+'!$G:$G,"Old")', M));
+    put(R,8, fp('SUMIFS(Targets!$C:$C,Targets!$A:$A,'+q+',Targets!$B:$B,"Old")', M));
+    put(R,9, fp('IFERROR(G'+R+'/H'+R+',0)', P1));
+    put(R,10,fp('IF(OR(H'+R+'=0,I'+R+'<'+ref.gateOld+'),0,ROUND(G'+R+'*'+ref.rateOld+',0))', M));
+    put(R,11,fp('SUMIFS('+Q+'!$F:$F,'+Q+'!$C:$C,'+q+','+Q+'!$G:$G,"MSN")', M));
+    put(R,12,fp('ROUND(K'+R+'*'+ref.rateMsn+',0)', M));
+    put(R,13,fp('F'+R+'+J'+R+'+L'+R, M));
+  });
+  const last = first + reps.length - 1, TOT = last + 1;
+  put(TOT,1,'Team');
+  [2,3,6,7,8,10,11,12,13].forEach(c => {
+    const L = X.utils.encode_col(c-1);
+    put(TOT,c, fp('SUM('+L+first+':'+L+last+')', M));
+  });
+  put(TOT,4, fp('IFERROR(B'+TOT+'/C'+TOT+',0)', P1));
+  put(TOT,9, fp('IFERROR(G'+TOT+'/H'+TOT+',0)', P1));
+
+  const CO = TOT + 2;
+  put(CO,1,"Head's override — the same three rules on the team total, then halved");
+  put(CO+1,1,'Collective new payout');
+  put(CO+1,2, fp('IF(OR(C'+TOT+'=0,D'+TOT+'<'+ref.floor+'),0,ROUND(B'+TOT
+    +'*'+ref.rateNew+'*MIN(D'+TOT+','+ref.cap+'),0))', M));
+  put(CO+2,1,'Collective old payout');
+  put(CO+2,2, fp('IF(OR(H'+TOT+'=0,I'+TOT+'<'+ref.gateOld+'),0,ROUND(G'+TOT
+    +'*'+ref.rateOld+',0))', M));
+  put(CO+3,1,'Collective MSN payout');
+  put(CO+3,2, fp('ROUND(K'+TOT+'*'+ref.rateMsn+',0)', M));
+  put(CO+4,1,'Collective result');
+  put(CO+4,2, fp('SUM(B'+(CO+1)+':B'+(CO+3)+')', M));
+  put(CO+5,1,"Head's payout");
+  put(CO+5,2, fp('ROUND(B'+(CO+4)+'*'+ref.headShare+',0)', M));
+  put(CO+7,1,'TOTAL SCHEME COST');
+  put(CO+7,2, fp('M'+TOT+'+B'+(CO+5), M));
+
+  put(CO+9,1,'How to read it');
+  [['New', 'revenue × rate × min(achievement, cap), and only once '
+           + 'achievement reaches the floor'],
+   ['Old', 'revenue × rate, and only once achievement reaches the gate'],
+   ['MSN', 'revenue × rate, flat, no gate and no band'],
+   ['Split orders', 'appear once per rep on the orders sheet, at that '
+           + 'rep’s share. Credited value is what counts.'],
+   ['Bucket', 'is a plain value on the orders sheet. Change one and the '
+           + 'payouts follow.']]
+    .forEach(([k,v],i) => { put(CO+10+i,1,k); put(CO+10+i,2,v); });
+
+  const wsC = X.utils.aoa_to_sheet(A);
+  wsC['!cols'] = [34,15,15,10,9,14,15,15,10,14,15,14,15].map(w => ({ wch:w }));
+  wsC['!freeze'] = { xSplit:'0', ySplit:String(TOP+1) };
+
+  const wb = X.utils.book_new();
+  X.utils.book_append_sheet(wb, wsC, 'Calculator');
+  X.utils.book_append_sheet(wb, wsO, ORD_SHEET);
+  X.utils.book_append_sheet(wb, wsT, 'Targets');
+  X.writeFile(wb, 'Incentive-calculator-' + month + '.xlsx');
+  return { rows: rows.length, reps: reps.length };
+}
+
 /* =============================================================== INCENTIVE
    The arithmetic lives in the calculateIncentive Cloud Function, not here,
    so that one set of rules serves the screen, the monthly mail and any later
@@ -4491,6 +4668,17 @@ function paintIncentive(d){
     ${d.rows.length ? d.rows.map(repCard).join('')
       : `<div class="card"><div class="empty">Nothing was booked in
          ${esc(monthLabel(d.month))}, so there is nothing to work out.</div></div>`}
+    ${d.team ? `<div class="card" style="border-color:var(--brand)">
+      <h2>The working, as a spreadsheet</h2>
+      <p class="sm muted" style="margin:-4px 0 12px">A live Excel model, not a
+        printout of these numbers. Every payout is a formula over the orders
+        and the targets, with the seven rates in cells at the top — change
+        the new-client rate and the whole sheet moves. Three sheets:
+        the calculator, every closed order that fed it, and the targets.</p>
+      <button class="btn" id="calcDl" style="width:auto;padding:11px 18px">
+        Download the calculator</button>
+      <p id="calcMsg" class="msg"></p>
+    </div>` : ''}
     ${d.collective ? `<div class="card">
       <h2>The collective, for the head’s override</h2>
       <p class="sm muted" style="margin:-4px 0 10px">Same three buckets, applied
@@ -4520,6 +4708,19 @@ function paintIncentive(d){
     </div>` : ''}
     <p class="sm muted">Calculated ${esc(new Date(d.calculatedAt).toLocaleString('en-IN'))}
       and stored, so the figure does not move if an order is edited afterwards.</p>`;
+
+  const dl = $('#calcDl');
+  if (dl) dl.onclick = async () => {
+    busy(dl, 'Building\u2026');
+    msg('calcMsg', '');
+    try {
+      const r = await downloadCalculator(d);
+      msg('calcMsg', r.rows + ' order line' + (r.rows===1?'':'s') + ' across '
+        + r.reps + ' people. Open it and change a rate to see it move.', 'ok');
+    } catch (e) {
+      msg('calcMsg', friendly(e, 'Could not build the workbook.'));
+    } finally { done(dl); }
+  };
 }
 
 /* ========================================================= CLIENT HISTORY
