@@ -516,6 +516,55 @@ function canonStore(v){
   return storeList().find(s => norm(s) === k) || t;
 }
 
+/* What was actually sold, and how much of it. The DCR never carried this: of
+   549 closed FY27 orders, 8% name a product anywhere in the remarks and 0.7%
+   carry a quantity. None of it can be backfilled, so product mix is honest
+   from the day this goes live and every screen that shows it says so.
+
+   A product carries its unit, because the unit belongs to the product and not
+   to whoever is typing: a pop-up counter sells plates, a bulk order sells
+   kilos, a kit sells boxes. Written "Name | Unit" in Admin so one paste of
+   the menu sets both. This list is a placeholder until Ayush pastes the real
+   menu over it. */
+const UNITS = ['Plate','Kg','Pack','Box','Piece','Litre','Person'];
+const PRODUCT_DEFAULT = [
+  'Chicken Dum Biryani | Plate',  'Veg Dum Biryani | Plate',
+  'Mutton Dum Biryani | Plate',   'Chicken Biryani Bulk | Kg',
+  'Veg Biryani Bulk | Kg',        'Mutton Biryani Bulk | Kg',
+  'Haleem | Plate',               'Chicken Kebab | Plate',
+  'Paneer Kebab | Plate',         'Mirchi ka Salan | Pack',
+  'Curd | Pack',                  'Qubani ka Meetha | Pack',
+  'Biryani Kit | Box'];
+
+function productRows(){
+  const raw = cfgDoc().products;
+  const src = Array.isArray(raw) && raw.length ? raw : PRODUCT_DEFAULT;
+  const out = [], seen = {};
+  src.forEach(r => {
+    const bits = String(r || '').split('|');
+    const n = (bits[0] || '').trim(), u = (bits[1] || '').trim();
+    if (!n || seen[norm(n)]) return;            // same product typed twice
+    seen[norm(n)] = 1;
+    out.push({ name: n, unit: UNITS.find(x => norm(x) === norm(u)) || u || '' });
+  });
+  return out;
+}
+const productList = () => productRows().map(p => p.name);
+
+/* "chicken dum biryani" and "Chicken Dum Biryani" are one product. Typed
+   free-hand they would be two, and the mix report would split in half. */
+function canonProduct(v){
+  const t = String(v || '').trim();
+  if (!t) return '';
+  const k = norm(t);
+  return productList().find(p => norm(p) === k) || t;
+}
+function productUnit(name){
+  const k = norm(name);
+  const hit = productRows().find(p => norm(p.name) === k);
+  return hit ? hit.unit : '';
+}
+
 /* ----------------------------------------------------------------- helpers */
 const $  = s => document.querySelector(s);
 const esc = s => String(s==null?'':s)
@@ -552,6 +601,8 @@ function cleanPhone(raw){
   if (d.length === 10 && '6789'.includes(d[0])) return d;          // mobile
   return null;
 }
+
+const inrx = n => '\u20b9' + (Math.round(Number(n)||0)).toLocaleString('en-IN');
 
 function inr(n){
   n = Number(n)||0;
@@ -1244,6 +1295,9 @@ function pick(accId){
   const account = S.byId[accId];
   const opp = S.opps.find(o => o.accountId === accId) || null;
   logSel = { account, opp };
+  /* A fresh deal starts with no order lines. Carrying the last deal's lines
+     over would be worse than no capture at all. */
+  S.logItems = []; S.logComm = 0; S.invPrompted = false;
   renderLogForm();
 }
 
@@ -1324,7 +1378,10 @@ function renderLogForm(){
   $('#stage').onchange = stageExtra;
   stageExtra();
   $('#save').onclick = saveLog;
-  $('#cancelLog').onclick = () => { logSel=null; $('#logForm').innerHTML=''; };
+  $('#cancelLog').onclick = () => {
+    logSel = null; S.logItems = []; S.logComm = 0; S.invPrompted = false;
+    $('#logForm').innerHTML = '';
+  };
 
   // Open where the work is, not at the top of the page.
   $('#formCard').scrollIntoView({ behavior:'smooth', block:'start' });
@@ -1381,10 +1438,12 @@ function stageExtra(){
   }
 
   if (s === CLOSED) {
+    /* The invoice number comes first because it is the trigger: type it and
+       the order details open. Set by Ayush, 6-Oct-26. */
     h += `<div class="row" style="margin-bottom:12px">
-        <div><label for="ov">Order value <span class="req">*</span></label>
-          <input id="ov" class="fld" inputmode="numeric"
-            value="${opp && opp.expectedValue ? Math.round(opp.expectedValue) : ''}"></div>
+        <div><label for="inv">Invoice number <span class="req">*</span></label>
+          <input id="inv" class="fld" autocomplete="off"
+            placeholder="Type it \u2014 order details open next"></div>
         <div><label for="ostore">Store the invoice was punched at
           <span class="req">*</span></label>
           <input id="ostore" class="fld" list="storeOpts"
@@ -1394,14 +1453,10 @@ function stageExtra(){
             .map(s => `<option value="${esc(s)}">`).join('')}</datalist></div>
       </div>
       <div class="row" style="margin-bottom:12px">
-        <div><label for="inv">Invoice number <span class="req">*</span></label>
-          <input id="inv" class="fld" placeholder="Mandatory on close"></div>
         <div><label for="pay">Payment status <span class="req">*</span></label>
           <select id="pay" class="fld">
             <option value="">Pick one</option>
             ${PAY_STATUS.map(p=>`<option>${p}</option>`).join('')}</select></div>
-      </div>
-      <div class="row" style="margin-bottom:12px">
         <div><label for="btype">Type of business <span class="req">*</span></label>
           <select id="btype" class="fld">
             <option value="">Pick one</option>
@@ -1409,9 +1464,12 @@ function stageExtra(){
               opp && opp.businessType === t ? ' selected' : ''}>${esc(t)}</option>`
             ).join('')}</select></div>
       </div>
-      <p class="hint">Store, invoice number, payment status and type of
-        business are all required. The last two start blank on purpose, so
-        each is a choice rather than a default.</p>`;
+      <div id="itemsBox" style="margin-bottom:12px"></div>
+      <input type="hidden" id="ov">
+      <p class="hint">Invoice number, store, payment status, type of business
+        and the order details are all required. The order value is added up
+        from the lines rather than typed, so what was sold and what it was
+        worth can never disagree.</p>`;
   }
 
   if (s === CANCELLED) {
@@ -1434,10 +1492,253 @@ function stageExtra(){
   const tw = $('#tempWrap');
   if (tw) tw.style.display = s < CLOSED ? '' : 'none';
 
+  /* "Once anyone put invoice then this popup should open." The details can
+     also be reopened from the box itself, because a rep who mistypes an
+     invoice number must not be locked out of fixing the lines.
+
+     Two guards, both found by driving this in a real browser. Without the
+     first, pressing down on a button while the invoice field still had focus
+     fired its change event, which tore the open popup down and built a new
+     one - so the press landed on a node that no longer existed and the tap
+     did nothing at all. Without the second, cancelling the popup and then
+     touching the invoice field again reopened it on every blur, which is
+     nagging rather than helping: the box's own button is the way back in. */
+  if (s === CLOSED) {
+    paintItems();
+    $('#inv').onchange = () => {
+      if (document.querySelector('#modal')) return;
+      if (S.invPrompted) return;
+      if ($('#inv').value.trim() && !(S.logItems || []).length) {
+        S.invPrompted = true;
+        orderDetails();
+      }
+    };
+  }
+
   const sel = $('#asgn'), an = anushikha();
   if (sel) sel.onchange = () => {
     $('#asgnWhyWrap').style.display = (an && sel.value===an.id) ? 'none' : '';
   };
+}
+
+/* ------------------------------------------------------- order line items
+   What was sold, how much of it, at what rate. Captured at close and nowhere
+   else, because close is the only moment the quantity is actually known.
+
+   Three decisions worth knowing, all of them Ayush's, 6-Oct-26:
+
+   - The popup opens off the invoice number. Reps type the invoice because
+     they have to; hanging the detail capture off that keystroke means the
+     lines get filled while the invoice is still in front of them.
+   - The order value is the sum of the lines, not a typed figure. A rep who
+     types 1,20,000 and then lists 80 plates at 250 has told us two different
+     things, and a mix report built on that is worthless. Make the arithmetic
+     the single source and the disagreement cannot happen.
+   - Commission is recorded but NOT deducted from the order value. value
+     stays what the invoice says, which is what 697 existing orders mean by
+     it and what incentive has always paid on. The aggregator's cut is stored
+     beside it as commissionPct / commissionValue / netRealisation, so the
+     net figure is new information rather than a silent restatement of old
+     numbers.                                                              */
+
+const lineGross = r => (Number(r.qty) || 0) * (Number(r.rate) || 0);
+
+/* "80 Plate Chicken Dum Biryani, 20 Kg Haleem" - short enough for a feed row
+   and an export cell, so the lines are visible without opening anything. */
+const itemsLine = o => (o.items || [])
+  .map(x => Math.round(Number(x.qty) || 0) + (x.unit ? ' ' + x.unit : '')
+            + ' ' + x.product)
+  .join(', ');
+const lineNet   = r => round2(lineGross(r) - (Number(r.discount) || 0));
+
+function itemTotals(items, commPct){
+  const it = items || [];
+  const gross = round2(it.reduce((a, x) => a + lineGross(x), 0));
+  const disc  = round2(it.reduce((a, x) => a + (Number(x.discount) || 0), 0));
+  const invv  = round2(gross - disc);
+  const comm  = round2(invv * (Number(commPct) || 0) / 100);
+  return { gross, disc, invv, comm, net: round2(invv - comm) };
+}
+
+/* Only the items box and the hidden order value are repainted. Re-rendering
+   the whole close block would wipe the invoice number the rep just typed. */
+function paintItems(){
+  const box = $('#itemsBox');
+  if (!box) return;
+  const it = S.logItems || [], t = itemTotals(it, S.logComm);
+
+  box.innerHTML = !it.length
+    ? `<div class="banner">No order details yet — <b>what was sold</b>, how
+         much of it and at what rate. The order value comes from these lines.
+         <div><button type="button" class="btn sec" id="itAdd"
+           style="width:auto;padding:8px 14px;margin-top:8px">
+           Add order details</button></div></div>`
+    : `<div class="card" style="padding:12px;margin:0">
+         <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+           <b>${it.length} line${it.length === 1 ? '' : 's'}</b>
+           <button type="button" class="chip" id="itAdd"
+             style="margin-left:auto">Edit</button></div>
+         ${it.map(x => `<div style="display:flex;gap:8px;align-items:baseline;
+             margin-bottom:4px">
+            <span class="sm" style="flex:1;min-width:0">${esc(x.product)}</span>
+            <span class="sm muted" style="white-space:nowrap">${x.qty}${
+              x.unit ? ' ' + esc(x.unit) : ''} × ${inrx(x.rate)}${
+              Number(x.discount) ? ' − ' + inrx(x.discount) : ''}</span>
+            <b class="sm" style="white-space:nowrap">${inrx(lineNet(x))}</b>
+           </div>`).join('')}
+         <div style="border-top:1px solid var(--line);margin-top:8px;
+           padding-top:8px">
+           <div style="display:flex"><span style="flex:1">Order value</span>
+             <b>${inrx(t.invv)}</b></div>
+           ${Number(S.logComm) ? `<div class="sm muted" style="display:flex">
+             <span style="flex:1">less ${S.logComm}% commission</span>
+             <span>${inrx(t.comm)}</span></div>
+             <div class="sm" style="display:flex">
+             <span style="flex:1">Net realisation</span>
+             <b>${inrx(t.net)}</b></div>` : ''}
+         </div></div>`;
+
+  const ov = $('#ov');
+  if (ov) ov.value = t.invv ? String(Math.round(t.invv)) : '';
+  const b = $('#itAdd');
+  if (b) b.onclick = orderDetails;
+}
+
+function orderDetails(){
+  const rows = (S.logItems || []).map(x => ({ ...x }));
+  if (!rows.length) rows.push({ product:'', qty:'', rate:'', discount:'' });
+  let comm = S.logComm || 0;
+
+  modal('Order details', `
+    <p class="sm muted" style="margin:0 0 10px">One line per product. The
+      order value is added up from these, so it cannot drift from what was
+      actually sold.</p>
+    <div id="itRows"></div>
+    <button type="button" class="btn sec" id="itMore"
+      style="width:auto;padding:8px 14px">+ Add product</button>
+    <div style="margin-top:14px">
+      <label for="itComm">Commission %</label>
+      <input id="itComm" class="fld" inputmode="decimal"
+        value="${comm || ''}" placeholder="0" style="max-width:140px">
+      <p class="sm muted" style="margin:6px 0 0">The aggregator's cut —
+        HungerBox, SmartQ, Compass. Leave it blank on a direct order. It is
+        recorded alongside the order, not taken off it.</p>
+    </div>
+    <div id="itSum" style="margin-top:12px"></div>
+    <datalist id="prodOpts">${productList()
+      .map(p => `<option value="${esc(p)}">`).join('')}</datalist>`, body => {
+
+    /* Read the DOM back into rows before any redraw, or a half-typed line is
+       lost the moment somebody adds another product. */
+    const read = () => {
+      const set = (cls, key) => body.querySelectorAll('.' + cls)
+        .forEach(e => { rows[+e.dataset.i][key] = e.value; });
+      set('ip', 'product'); set('iq', 'qty');
+      set('ir', 'rate');    set('id_', 'discount');
+      comm = Number(body.querySelector('#itComm').value) || 0;
+    };
+
+    const sum = () => {
+      const t = itemTotals(rows, comm);
+      body.querySelector('#itSum').innerHTML = `
+        <div class="card" style="padding:10px;margin:0">
+          <div style="display:flex"><span style="flex:1">Order value</span>
+            <b>${inrx(t.invv)}</b></div>
+          ${t.disc ? `<div class="sm muted" style="display:flex">
+            <span style="flex:1">after ${inrx(t.disc)} discount</span></div>`:''}
+          ${comm ? `<div class="sm muted" style="display:flex">
+            <span style="flex:1">less ${comm}% commission</span>
+            <span>${inrx(t.comm)}</span></div>
+            <div class="sm" style="display:flex">
+            <span style="flex:1">Net realisation</span>
+            <b>${inrx(t.net)}</b></div>` : ''}
+        </div>`;
+    };
+
+    const draw = () => {
+      body.querySelector('#itRows').innerHTML = rows.map((r, i) => {
+        const u = productUnit(r.product || '');
+        return `<div class="card" style="padding:10px;margin:0 0 8px">
+          <div style="display:flex;align-items:center;margin-bottom:6px">
+            <b class="sm">Line ${i + 1}</b>
+            ${rows.length > 1 ? `<button type="button" class="chip irm"
+              data-i="${i}" style="margin-left:auto">Remove</button>` : ''}
+          </div>
+          <input class="fld ip" data-i="${i}" list="prodOpts"
+            autocomplete="off" placeholder="Product — start typing"
+            value="${esc(r.product || '')}" style="margin-bottom:6px">
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <div style="flex:1 1 72px;min-width:72px">
+              <label class="sm" for="iq${i}">Qty${u ? ' (' + esc(u) + ')' : ''}</label>
+              <input id="iq${i}" class="fld iq" data-i="${i}"
+                inputmode="decimal" value="${esc(r.qty == null ? '' : r.qty)}"></div>
+            <div style="flex:1 1 72px;min-width:72px">
+              <label class="sm" for="ir${i}">Rate</label>
+              <input id="ir${i}" class="fld ir" data-i="${i}"
+                inputmode="decimal" value="${esc(r.rate == null ? '' : r.rate)}"></div>
+            <div style="flex:1 1 72px;min-width:72px">
+              <label class="sm" for="id${i}">Discount</label>
+              <input id="id${i}" class="fld id_" data-i="${i}"
+                inputmode="decimal"
+                value="${esc(r.discount == null ? '' : r.discount)}"></div>
+          </div>
+          <div class="sm" style="text-align:right;margin-top:6px">
+            ${inrx(lineNet(r))}</div>
+        </div>`; }).join('');
+      bind(); sum();
+    };
+
+    const bind = () => {
+      /* Qty, rate and discount update the totals on every keystroke without a
+         redraw, because redrawing would steal the caret mid-number. The
+         product field redraws on change, to pick up its unit. */
+      body.querySelectorAll('.iq,.ir,.id_').forEach(e =>
+        e.oninput = () => { read(); sum(); });
+      body.querySelectorAll('.ip').forEach(e =>
+        e.onchange = () => { read(); draw(); });
+      body.querySelectorAll('.irm').forEach(e => e.onclick = () => {
+        read(); rows.splice(+e.dataset.i, 1); draw();
+      });
+    };
+
+    body.querySelector('#itMore').onclick = () => {
+      read(); rows.push({ product:'', qty:'', rate:'', discount:'' }); draw();
+    };
+    body.querySelector('#itComm').oninput = () => { read(); sum(); };
+    draw();
+
+    return () => {
+      read();
+      /* A blank trailing line is somebody who tapped "Add product" and
+         changed their mind, not an error. Drop it silently. */
+      const clean = rows
+        .filter(r => String(r.product||'').trim() || Number(r.qty) || Number(r.rate))
+        .map(r => ({
+          product: canonProduct(r.product),
+          qty: round2(Number(r.qty) || 0),
+          rate: round2(Number(r.rate) || 0),
+          discount: round2(Number(r.discount) || 0)
+        }));
+      if (!clean.length) return 'Add at least one product.';
+      for (const r of clean) {
+        if (!r.product) return 'Every line needs a product.';
+        if (r.qty <= 0)
+          return 'Quantity has to be more than zero on ' + r.product + '.';
+        if (r.rate <= 0)
+          return 'Rate has to be more than zero on ' + r.product + '.';
+        if (r.discount < 0) return 'A discount cannot be negative.';
+        if (r.discount > lineGross(r))
+          return 'The discount on ' + r.product + ' is bigger than the line.';
+      }
+      if (comm < 0 || comm > 100)
+        return 'Commission has to be between 0 and 100%.';
+      clean.forEach(r => { r.unit = productUnit(r.product) || ''; });
+      S.logItems = clean;
+      S.logComm = round2(comm);
+      paintItems();
+      return null;
+    };
+  });
 }
 
 function lmsg(t, cls){
@@ -1479,8 +1780,15 @@ async function saveLog(){
     return lmsg('Give a reason for assigning away from '+an.name+'.','err');
 
   if (s === CLOSED) {
-    if (!Number(digits(val('ov')))) return lmsg('Order value is required to close.','err');
     if (!val('inv')) return lmsg('Invoice number is required to close.','err');
+    /* Mandatory on every closed order. Set by Ayush, 6-Oct-26: partial
+       capture would make the mix report a guess dressed up as a number. */
+    if (!(S.logItems || []).length)
+      return lmsg('Add the order details \u2014 what was sold, how much of it '
+        + 'and at what rate.','err');
+    if (!Number(digits(val('ov'))))
+      return lmsg('The order lines add up to nothing. Check the quantities '
+        + 'and rates.','err');
     if (!val('pay')) return lmsg('Payment status is required to close.','err');
     if (!val('btype'))
       return lmsg('Say what kind of business this was \u2014 pop-up, bulk order '
@@ -1569,7 +1877,16 @@ async function saveLog(){
         businessType: val('btype'),
         invoiceNumber: val('inv'), paymentStatus: val('pay'),
         paymentReceivedAt: null, financeApprovedAt: null,
-        aggregator: null, commissionPct: 0
+        aggregator: null,
+        /* What was sold. value stays the invoice figure; the commission sits
+           beside it rather than being taken off, so no existing number moves
+           meaning. */
+        items: (S.logItems || []).map(r => ({ ...r })),
+        itemsTotal: itemTotals(S.logItems, S.logComm).gross,
+        discountTotal: itemTotals(S.logItems, S.logComm).disc,
+        commissionPct: Number(S.logComm) || 0,
+        commissionValue: itemTotals(S.logItems, S.logComm).comm,
+        netRealisation: itemTotals(S.logItems, S.logComm).net
       };
       if (approved) {
         orderData.creditSplit = { [S.me.id]: approved.pct,
@@ -1596,6 +1913,7 @@ async function saveLog(){
     else S.opps.push({ id: oppId, accountId: account.id, stage: s, ...oppData });
 
     logSel = null;
+    S.logItems = []; S.logComm = 0; S.invPrompted = false;
     S.holdLog = true;        // a live repaint must not wipe this confirmation
     $('#logForm').innerHTML = `<div class="card"><h2>Saved</h2>
       <p>${esc(account.name)} logged at ${ab(STAGES[s].k)}.</p>
@@ -1913,6 +2231,28 @@ function viewDash() {
     bizM[o.businessType] = (bizM[o.businessType] || 0) + (o.value || 0); });
   const bizSplit = Object.entries(bizM).sort((a,b) => b[1] - a[1]).slice(0, 8);
 
+  /* What sold and at what rate. Only orders carrying lines can count, and the
+     card says how many did: a mix built on 3 of 40 orders is a guess, and it
+     has to look like one rather than like a finding. Rate realisation -
+     revenue over quantity - is the number that says whether a pop-up is worth
+     running again, which order value alone never could. */
+  const pm = {};
+  let withItems = 0;
+  ord.forEach(o => {
+    if (!(o.items || []).length) return;
+    withItems++;
+    o.items.forEach(x => {
+      const k = x.product || 'Not set';
+      const p = pm[k] || (pm[k] = { rev:0, qty:0, unit:x.unit || '' });
+      p.rev += lineNet(x);
+      p.qty += Number(x.qty) || 0;
+      if (!p.unit && x.unit) p.unit = x.unit;
+    });
+  });
+  const prodSplit = Object.entries(pm)
+    .sort((a, b) => b[1].rev - a[1].rev).slice(0, 10);
+  const prodRev = Object.values(pm).reduce((a, p) => a + p.rev, 0);
+
   const actIn = (S.acts || []).filter(a => {
     const d = String(a.loggedAt || '').slice(0, 10);
     return d >= from && d <= to && uids.includes(a.loggedBy);
@@ -2047,6 +2387,34 @@ function viewDash() {
           : `<div class="empty">Not recorded on any order in this range.
              <br><span class="sm">It is captured on every order closed from
              today, and on history after the next seed rebuild.</span></div>`}
+      </div>
+      <div class="card" style="margin:0">
+        <h2>What sold, and at what rate</h2>
+        ${prodSplit.length ? `<table class="dt">
+            <thead><tr><th class="lft">Product</th><th>Qty</th>
+              <th>Revenue</th><th>Per unit</th><th>Share</th></tr></thead>
+            <tbody>${prodSplit.map(([k, p]) => `<tr>
+              <td class="lft">${esc(k)}</td>
+              <td>${Math.round(p.qty).toLocaleString('en-IN')}${
+                p.unit ? ' <span class="muted">' + esc(p.unit) + '</span>' : ''}</td>
+              <td>${inr(p.rev)}</td>
+              <td>${p.qty ? inrx(p.rev / p.qty) : '\u2014'}</td>
+              <td>${prodRev ? Math.round(p.rev * 100 / prodRev) + '%'
+                             : '\u2014'}</td></tr>`).join('')}</tbody>
+          </table>` : ''}
+        ${!ord.length ? `<div class="empty">No closed orders in this
+            range.</div>`
+          : !withItems ? `<div class="empty">None of the ${ord.length} orders
+            in this range carry product lines.
+            <br><span class="sm">Captured on every order closed from 6-Oct-26.
+            FY27 history cannot be backfilled \u2014 of 549 closed orders the
+            workbook carried a quantity on 4.</span></div>` : ''}
+        ${withItems ? `<p class="hint" style="margin-top:10px">${
+          withItems === ord.length
+            ? 'All ' + ord.length + ' orders in this range carry lines.'
+            : withItems + ' of ' + ord.length + ' orders carry lines, so this '
+              + 'is the mix of ' + Math.round(withItems * 100 / ord.length)
+              + '% of them and not of the range.'}</p>` : ''}
       </div>
       <div class="card" style="margin:0">
         <h2>How the team made contact</h2>
@@ -2356,6 +2724,94 @@ function wireBusiness(){
     save(BUSINESS_DEFAULT.slice(), 'Back to the defaults.');
 }
 
+/* The product master. Paste the menu over it, one product per line, with the
+   unit after a pipe. The unit lives with the product because it belongs to
+   the product: a pop-up sells plates, bulk sells kilos, a kit sells boxes,
+   and asking a rep to pick the unit every time is how you end up with 80 kg
+   of biryani at a counter that served 80 plates. */
+function adminProducts(){
+  const rows = productRows();
+  const custom = Array.isArray(cfgDoc().products) && cfgDoc().products.length;
+
+  /* What the orders themselves already say, which is the only honest measure
+     of whether this list matches the menu. */
+  const used = {}, unitSeen = {};
+  S.orders.forEach(o => (o.items || []).forEach(x => {
+    const p = String(x.product || '').trim();
+    if (!p) return;
+    used[p] = (used[p] || 0) + (Number(x.qty) || 0);
+    if (x.unit) unitSeen[p] = x.unit;
+  }));
+  const known = rows.map(r => norm(r.name));
+  const unknown = Object.keys(used).filter(p => !known.includes(norm(p)));
+
+  return `
+    <div class="card">
+      <h2>Products</h2>
+      <p class="sm muted" style="margin:-4px 0 10px">What a rep searches when
+        they fill in the order details. One per line as
+        <code>Name | Unit</code> — the unit is pre-filled from here, so the
+        rep never picks it. Units available:
+        ${UNITS.join(', ')}.</p>
+      <textarea id="prodList" class="fld" rows="${Math.max(8, rows.length + 1)}"
+        style="font-family:ui-monospace,monospace;font-size:14px"
+        >${esc(rows.map(r => r.unit ? r.name + ' | ' + r.unit : r.name)
+               .join('\n'))}</textarea>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn" id="prSave" style="width:auto;padding:10px 18px">
+          Save list</button>
+        <button class="btn sec" id="prReset" style="width:auto;padding:10px 18px">
+          Back to the starter list</button>
+      </div>
+      <p id="prMsg" class="msg${S.prFlash ? ' ok' : ''}">${
+        S.prFlash ? esc(S.prFlash) : ''}</p>
+      ${custom ? '' : `<p class="hint" style="margin-top:10px;color:var(--warn)">
+        This is still the starter list I guessed from the DCR remarks, not the
+        real menu. Paste the menu over it — rate realisation per product is
+        only as good as these names.</p>`}
+      ${unknown.length ? `<p class="hint" style="margin-top:10px">
+        <b>${unknown.length}</b> product${unknown.length > 1 ? 's are' : ' is'}
+        already on orders but not on this list —
+        ${esc(unknown.slice(0, 6).join(', '))}${unknown.length > 6
+          ? ' and more' : ''}. A rep typed those free-hand. Add them here if
+        they are real, so the next rep picks instead of retyping.</p>` : ''}
+      ${Object.keys(used).length ? `<p class="hint" style="margin-top:8px">
+        Sold so far: ${esc(Object.entries(used).sort((a,b) => b[1]-a[1])
+          .slice(0, 8).map(([k,n]) => k + ' (' + Math.round(n)
+            + (unitSeen[k] ? ' ' + unitSeen[k] : '') + ')').join(' · '))}</p>`
+        : `<p class="hint" style="margin-top:8px">No order carries product
+           lines yet. Every order closed from today will. FY27 history cannot
+           be backfilled — of 549 closed orders the workbook carried a
+           quantity on 4.</p>`}
+    </div>`;
+}
+
+function wireProducts(){
+  const save = async (list, note) => {
+    const b = $('#prSave'); busy(b, 'Saving…');
+    try {
+      await setDoc(doc(db, 'meta', 'config'),
+        { products: list, updatedBy: S.me.id, updatedAt: stamp(today()) },
+        { merge: true });
+      S.prFlash = note; msg('prMsg', note, 'ok');
+    } catch (e) {
+      S.prFlash = null; msg('prMsg', friendly(e, 'Could not save the list.'));
+    } finally { done(b); }
+  };
+  $('#prSave').onclick = () => {
+    const list = [...new Set($('#prodList').value.split('\n')
+      .map(x => x.trim()).filter(Boolean))];
+    if (!list.length) return msg('prMsg', 'The list cannot be empty.');
+    /* A line with no unit still works - the rep just sees "Qty" with no unit
+       beside it - so this is a warning and not a refusal. */
+    const noUnit = list.filter(x => !x.includes('|')).length;
+    save(list, 'Saved. ' + list.length + ' products offered from now on'
+      + (noUnit ? ', ' + noUnit + ' of them without a unit.' : '.'));
+  };
+  $('#prReset').onclick = () =>
+    save(PRODUCT_DEFAULT.slice(), 'Back to the starter list.');
+}
+
 /* The store master. Seeded from whatever the orders already contain, so it
    starts correct rather than empty, and editable because 38 names arrived
    from a workbook and a few of them want renaming. */
@@ -2519,6 +2975,7 @@ function wireWeights(){
    silently restate January's numbers.                                     */
 
 const round4 = n => Math.round(n * 10000) / 10000;
+const round2 = n => Math.round(n * 100) / 100;
 
 const splitFor = (accountId, uid) => (S.splits || []).find(x =>
   x.accountId === accountId && x.requestedBy === uid && x.status === 'approved');
@@ -2923,6 +3380,8 @@ function viewAdmin() {
   wireStores();
   $('#view').insertAdjacentHTML('beforeend', adminBusiness());
   wireBusiness();
+  $('#view').insertAdjacentHTML('beforeend', adminProducts());
+  wireProducts();
   $('#view').insertAdjacentHTML('beforeend', adminWeights());
   wireWeights();
   $('#view').insertAdjacentHTML('beforeend', adminSplits());
@@ -3836,6 +4295,7 @@ function viewData(){
         <div><label for="exSet">What</label>
           <select id="exSet" class="fld">
             <option value="orders">Orders</option>
+            <option value="orderLines">Order lines (one row per product)</option>
             <option value="pipeline">Open pipeline</option>
             <option value="accounts">Accounts</option>
             <option value="contacts">Contacts</option>
@@ -4211,7 +4671,30 @@ const EX_SETS = {
     ['Payment',    o => o.paymentStatus || ''],
     ['Channel',    o => o.channel || ''],
     ['Type of business', o => o.businessType || ''],
+    ['What was sold',  o => itemsLine(o)],
+    ['Discount',   o => o.discountTotal || 0],
+    ['Commission %', o => o.commissionPct || 0],
+    ['Commission',  o => o.commissionValue || 0],
+    ['Net realisation', o => o.netRealisation == null
+                              ? (o.value || 0) : o.netRealisation],
     ['Expected',   o => o.expectedValue || '']] },
+  /* One row per product line rather than per order, because mix and rate
+     realisation are line questions and a spreadsheet cannot unpick a
+     comma-joined cell. */
+  orderLines: { dated:true, cols:[
+    ['Date',       r => String(r.o.orderDate||'').slice(0,10)],
+    ['Account',    r => accName(r.o.accountId)],
+    ['Rep',        r => r.o.bookedBy ? userName(r.o.bookedBy) : ''],
+    ['Product',    r => r.x.product || ''],
+    ['Unit',       r => r.x.unit || ''],
+    ['Quantity',   r => Number(r.x.qty) || 0],
+    ['Rate',       r => Number(r.x.rate) || 0],
+    ['Discount',   r => Number(r.x.discount) || 0],
+    ['Line value', r => lineNet(r.x)],
+    ['Type of business', r => r.o.businessType || ''],
+    ['Store',      r => r.o.store || ''],
+    ['Invoice',    r => r.o.invoiceNumber || ''],
+    ['Order value', r => r.o.value || 0]] },
   pipeline: { dated:false, cols:[
     ['Account',    o => accName(o.accountId)],
     ['Stage',      o => STAGES[o.stage].k],
@@ -4268,6 +4751,14 @@ function exportRows(set, uids, from, to){
   switch (set) {
     case 'orders':   return S.orders
       .filter(o => (!o.bookedBy || uids.includes(o.bookedBy)) && inRange(o.orderDate));
+    case 'orderLines': {
+      const out = [];
+      S.orders
+        .filter(o => (!o.bookedBy || uids.includes(o.bookedBy))
+                     && inRange(o.orderDate))
+        .forEach(o => (o.items || []).forEach(x => out.push({ o, x })));
+      return out;
+    }
     case 'pipeline': return openDeals(uids);
     case 'accounts': return S.accounts.filter(a => uids.includes(a.owner));
     case 'contacts': return S.contacts.filter(c => {
@@ -4413,9 +4904,10 @@ function incentiveRows(month){
     Object.keys(split).forEach(uid => {
       const share = split[uid] || 0;
       if (!share) return;
-      out.push({ date: String(o.orderDate).slice(0,10),
+      out.push({ oid: o.id, date: String(o.orderDate).slice(0,10),
         account: a.name || '', rep: userName(uid), share,
         value: o.value || 0, bucket, store: o.store || '',
+        items: (o.items || []).map(x => ({ ...x })),
         invoice: o.invoiceNumber || '', pay: o.paymentStatus || '',
         biz: o.businessType || '' });
     });
@@ -4455,6 +4947,48 @@ async function downloadCalculator(d){
   wsO['!cols'] = [12,34,13,9,14,15,9,22,20,18,18].map(w => ({ wch:w }));
   wsO['!autofilter'] = { ref: 'A1:K' + nR };
   wsO['!freeze'] = { xSplit:'0', ySplit:'1' };
+
+  /* ---- Order lines ----
+     One row per product, so the question "what did that payout actually sell"
+     is answerable from inside the same file. */
+  const lA = [['Date','Account','Rep','Product','Unit','Qty','Rate',
+               'Discount','Line value','Type of business','Invoice']];
+  const lseen = {}, lwith = {};
+  rows.forEach(r => {
+    if (lseen[r.oid]) return;
+    lseen[r.oid] = 1;
+    if ((r.items || []).length) lwith[r.oid] = 1;
+    (r.items || []).forEach(x => {
+    const R = lA.length + 1;
+    lA.push([r.date, r.account, r.rep, x.product || '', x.unit || '',
+             { v: Number(x.qty) || 0, t:'n' },
+             { v: Number(x.rate) || 0, t:'n', z:M },
+             { v: Number(x.discount) || 0, t:'n', z:M },
+             fp('F' + R + '*G' + R + '-H' + R, M),
+             r.biz, r.invoice]);
+    });
+  });
+  const lR = lA.length;
+  if (lR > 1) lA.push(['','','','','','','','Total',
+                       fp('SUM(I2:I' + lR + ')', M)]);
+  /* Say what this covers. Orders imported from the DCR carry no lines, so for
+     any month that straddles 6-Oct-26 this total is a part of the revenue and
+     not all of it - and a part presented as a whole is how a spreadsheet
+     lies. */
+  const nOrd = Object.keys(lwith).length;
+  const nAll = Object.keys(lseen).length;
+  lA.push([]);
+  lA.push([nOrd === nAll && nAll
+    ? 'All ' + nAll + ' closed orders in this month carry product lines.'
+    : nOrd + ' of ' + nAll + ' closed orders carry product lines, so this '
+      + 'total is ' + (nAll ? Math.round(nOrd * 100 / nAll) : 0) + '% of the '
+      + 'month by count, not the whole of it. Lines are captured from '
+      + '6-Oct-26; earlier orders came from the workbook, which never '
+      + 'carried a product or a quantity.']);
+  const wsL = X.utils.aoa_to_sheet(lA);
+  wsL['!cols'] = [12,30,13,26,8,9,12,11,14,18,18].map(w => ({ wch:w }));
+  wsL['!autofilter'] = { ref: 'A1:K' + lR };
+  wsL['!freeze'] = { xSplit:'0', ySplit:'1' };
 
   /* ---- Targets ---- */
   const tA = [['Rep','Bucket','Target']];
@@ -4551,6 +5085,7 @@ async function downloadCalculator(d){
   const wb = X.utils.book_new();
   X.utils.book_append_sheet(wb, wsC, 'Calculator');
   X.utils.book_append_sheet(wb, wsO, ORD_SHEET);
+  X.utils.book_append_sheet(wb, wsL, 'Order lines');
   X.utils.book_append_sheet(wb, wsT, 'Targets');
   X.writeFile(wb, 'Incentive-calculator-' + month + '.xlsx');
   return { rows: rows.length, reps: reps.length };
@@ -5147,6 +5682,12 @@ function viewFeed(){
       style="color:var(--warn)">Credit split not settled yet</div>` : ''}
     ${r.order && r.order.businessType
       ? `<div class="sm"><b>${esc(r.order.businessType)}</b></div>` : ''}
+    ${r.order && (r.order.items || []).length
+      ? `<div class="sm">${esc(itemsLine(r.order))}${
+          Number(r.order.commissionPct)
+            ? ` <span class="muted">\u00b7 ${r.order.commissionPct}% commission,
+                net ${inrx(r.order.netRealisation || 0)}</span>` : ''}</div>`
+      : ''}
     ${r.order ? `<div class="sm muted">${
       r.order.invoiceNumber ? 'Invoice ' + esc(r.order.invoiceNumber)
                             : '<span class="req">no invoice number</span>'}${

@@ -114,15 +114,19 @@ service cloud.firestore {
     }
 
     // ---- orders ----------------------------------------------------------
-    // Invoice number and payment status are mandatory. Enforced here as well
-    // as in the UI, because revenue depends on it.
+    // Invoice number, payment status and at least one product line are
+    // mandatory. Enforced here as well as in the UI, because revenue depends
+    // on it and because a browser with an older build cached is still a
+    // browser that can write.
     match /orders/{id} {
       allow read: if isStaff();
       allow create: if isStaff() && paradiseEmail()
         && request.resource.data.value > 0
         && request.resource.data.store != ''
         && request.resource.data.invoiceNumber != ''
-        && request.resource.data.paymentStatus != '';
+        && request.resource.data.paymentStatus != ''
+        && request.resource.data.items is list
+        && request.resource.data.items.size() > 0;
       allow update: if isStaff() && paradiseEmail();
       allow delete: if isAdmin();
     }
