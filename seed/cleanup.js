@@ -62,10 +62,27 @@ const db = getFirestore();
     }
     const keep = new Set(JSON.parse(fs.readFileSync(file, 'utf8')).map(d => d.id));
     const snap = await db.collection(name).get();
-    const stale = snap.docs.filter(d => !keep.has(d.id));
+    let stale = snap.docs.filter(d => !keep.has(d.id));
+
+    /* An order a rep logged in the app is not in the seed either, so on this
+       collection "not in the seed" would mean "delete the team's real work".
+       The seed writes channel:'' and the app writes channel:'app', so those
+       are identified and spared, and the count is printed - a silent
+       exclusion is how you end up trusting a number you should not.
+
+       Activities get no such guard because nothing distinguishes a seeded one
+       from a logged one: both carry loggedBy and the same shape. Do not pass
+       --only=activities. */
+    let spared = 0;
+    if (name === 'orders') {
+      const before = stale.length;
+      stale = stale.filter(d => (d.data() || {}).channel !== 'app');
+      spared = before - stale.length;
+    }
 
     console.log(name.padEnd(14) + snap.size + ' in Firestore, '
-      + keep.size + ' in the seed, ' + stale.length + ' stale');
+      + keep.size + ' in the seed, ' + stale.length + ' stale'
+      + (spared ? ', ' + spared + ' logged in the app and kept' : ''));
     stale.slice(0, 5).forEach(d => console.log('    ' + d.id));
     if (stale.length > 5) console.log('    … and ' + (stale.length - 5) + ' more');
 

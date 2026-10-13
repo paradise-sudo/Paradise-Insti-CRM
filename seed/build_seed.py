@@ -316,6 +316,90 @@ else:
 
 rows.sort(key=lambda x: x['date'])
 report['rows_total'] = len(rows)
+report['orders_merged'] = 0
+report['orders_merged_value'] = 0
+
+# ------------------------------------------------- one invoice, one order
+# Compass CPU Hyd is worked by Bashab and Sameer together, and both log the
+# closure - same date, same value, same invoice number, same store, same
+# "Business Closed" remark. The importer gave each row its own order, so
+# Rs 88.6 lakh of FY27 - 21.6% of it - was the same bills counted twice, and
+# the CRM read 410.6L where the P&L reads 322.1L.
+#
+# The fix cannot be "collapse rows matching on account, date and value".
+# That was tried once and lost Rs 79.8 lakh, because a caterer really does
+# deliver the same order twice in a day; seq() exists for exactly that. So
+# two rows are the same order only when:
+#
+#   * they carry the same non-empty invoice number AND the same value - one
+#     bill is one order whoever typed it and on whatever day. The value has
+#     to match too, because "CIFSPL270715" is a weekly Compass reference
+#     rather than a bill number and carries three different amounts; and
+#   * or they match on account, order date and value AND were logged by two
+#     DIFFERENT reps. Same rep, same day, same value, no invoice is the
+#     genuine repeat delivery, and it stays two orders.
+#
+# 46 pairs collapse. 45 are two reps and get half the credit each - set by
+# Ayush, 13-Oct-26 - which is what creditSplit is for. The 46th is one rep
+# who entered a 6 May popup again on the 7th, invoice and all, and takes the
+# whole credit. Activities are NOT collapsed: both reps did log the call,
+# and the entry log should still show that they did.
+_dupe_rows = [r for r in rows if r.get('source') == 'fy27' and r['actual'] > 0]
+_par = list(range(len(_dupe_rows)))
+
+
+def _find(a):
+    while _par[a] != a:
+        _par[a] = _par[_par[a]]
+        a = _par[a]
+    return a
+
+
+def _union(a, b):
+    ra, rb = _find(a), _find(b)
+    if ra != rb:
+        _par[ra] = rb
+
+
+def _oday(r):
+    return (r['orderDate'] or r['date']).isoformat()
+
+
+_by_value = collections.defaultdict(list)
+for _n, _r in enumerate(_dupe_rows):
+    _by_value[round(_r['actual'], 2)].append(_n)
+
+for _g in _by_value.values():
+    for _a in range(len(_g)):
+        for _b in range(_a + 1, len(_g)):
+            ra, rb = _dupe_rows[_g[_a]], _dupe_rows[_g[_b]]
+            same_inv = ra['invoiceNo'] and ra['invoiceNo'] == rb['invoiceNo']
+            same_ord = (norm(ra['account']) == norm(rb['account'])
+                        and _oday(ra) == _oday(rb) and ra['rep'] != rb['rep'])
+            if same_inv or same_ord:
+                _union(_g[_a], _g[_b])
+
+_members = collections.defaultdict(list)
+for _n in range(len(_dupe_rows)):
+    _members[_find(_n)].append(_n)
+
+for _lead, _ms in _members.items():
+    if len(_ms) < 2:
+        continue
+    # The earliest row leads, so the order keeps the date it was really placed
+    # rather than the date somebody re-keyed it.
+    _ms.sort(key=lambda n: (_oday(_dupe_rows[n]), _dupe_rows[n]['date']))
+    _reps = []
+    for _n in _ms:
+        _rp = _dupe_rows[_n]['rep']
+        if _rp and _rp not in _reps:
+            _reps.append(_rp)
+    _dupe_rows[_ms[0]]['creditReps'] = _reps
+    for _n in _ms[1:]:
+        _dupe_rows[_n]['skipOrder'] = True
+        report['orders_merged'] += 1
+        report['orders_merged_value'] += round(_dupe_rows[_n]['actual'], 2)
+
 
 # ---------------------------------------------------------------- users
 users = []
@@ -437,8 +521,19 @@ for key, rs in by_account.items():
             remarks=x['remarks'], checkIn=None,
             loggedBy=uid(x['rep']) if x['rep'] else None,
             loggedAt=x['date'].isoformat()))
-        if x['actual'] > 0:
+        if x['actual'] > 0 and not x.get('skipOrder'):
             od = x['orderDate'] or x['date']
+            # Two reps on one invoice: the order is worth its full value, and
+            # the credit is halved. creditOf() in the app reads this, so each
+            # rep's achievement and incentive follow their share while the
+            # company's revenue stays the one figure on the bill.
+            _cr = x.get('creditReps') or []
+            _split = None
+            if len(_cr) > 1:
+                _sh = round(1.0 / len(_cr), 4)
+                _split = {uid(p): _sh for p in _cr}
+                # the last one absorbs the rounding, so the shares total 1
+                _split[uid(_cr[-1])] = round(1 - _sh * (len(_cr) - 1), 4)
             orders.append(dict(
                 id=sid('ord', seq(key + od.isoformat() + str(x['actual']))),
                 accountId=aid, opportunityId=oid,
@@ -456,7 +551,9 @@ for key, rs in by_account.items():
                 paymentStatus=x['hoStatus'] or 'Pending',
                 paymentReceivedAt=None, financeApprovedAt=None,
                 aggregator=x['aggregator'] or None,
-                commissionPct=0.15 if x['aggregator'] in AGGS else 0))
+                commissionPct=0.15 if x['aggregator'] in AGGS else 0,
+                **({'creditSplit': _split, 'creditPending': False}
+                   if _split else {})))
 
 # ---------------------------------------------------------------- targets
 # Three blocks per sheet: Overall, New (client|order), Old (client|order).

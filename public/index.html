@@ -2129,7 +2129,7 @@ function viewDash() {
     return;
   }
 
-  const ord = ordersIn(from, to, uids);
+  const ord = ordersCredited(from, to, uids);
   const net = ord.reduce((n, o) => n + (o.value || 0), 0);
   const tgt = targetForRange(from, to, uids);
   const ach = tgt ? net / tgt : 0;
@@ -2166,7 +2166,7 @@ function viewDash() {
   const weighted = open.reduce((n, o) => n + (o.expectedValue || 0) * STAGES[o.stage].w, 0);
 
   // last year, same window
-  const lyOrd = ordersIn(lastYear(from), lastYear(to), uids);
+  const lyOrd = ordersCredited(lastYear(from), lastYear(to), uids);
   const lyNet = lyOrd.reduce((n, o) => n + (o.value || 0), 0);
   const growth = lyNet ? net / lyNet - 1 : null;
 
@@ -3014,6 +3014,34 @@ const hasCredit = (o, uids) => o.creditSplit
   ? uids.some(u => (o.creditSplit[u] || 0) > 0)
   : (!o.bookedBy || uids.includes(o.bookedBy));
 
+/* What a SET of people is owed from an order - the sum of their shares.
+   Viewing all reps, the shares total 1 and this is the invoice; viewing one
+   rep it is their half; viewing a manager's team it is the team's part and
+   not the other team's. */
+const creditTo = (o, uids) => o.creditSplit
+  ? (o.value || 0) * uids.reduce((n, u) => n + (o.creditSplit[u] || 0), 0)
+  : (o.value || 0);
+
+/* Orders in the window, restated to what these people are owed.
+
+   Every total on the dashboard reads o.value, which was right while no
+   imported order had a split. 45 of them do now - one Compass invoice worked
+   by two reps - and without this, opening the dashboard as Bashab and again
+   as Sameer would show each of them the whole bill, so the two views would
+   add up to more than the company billed. Scaling here fixes every total
+   below at once rather than in a dozen separate sums.
+
+   Quantities on the product lines are deliberately NOT scaled: 40 half
+   plates is not a thing that was sold, and the mix answers what went out of
+   the kitchen, not whose revenue it was. */
+function ordersCredited(from, to, uids){
+  return ordersIn(from, to, uids).map(o => {
+    const f = (o.value || 0) ? creditTo(o, uids) / o.value : 1;
+    return f === 1 ? o : { ...o, value: creditTo(o, uids),
+                           expectedValue: (o.expectedValue || 0) * f };
+  });
+}
+
 /* Admin: the queue. Shown as a nav badge so a pending split cannot sit
    unnoticed while the month closes around it. */
 function pendingSplits(){
@@ -3722,7 +3750,9 @@ function exceptionSets(uids){
   const open = openDeals(uids);
   const td   = TODAY();
   const fy   = FY_START();
-  const mine = o => !o.bookedBy || uids.includes(o.bookedBy);
+  // Credit, not bookedBy: a shared invoice carries one bookedBy and two
+  // owners, and the rep who is not named on it must still see it.
+  const mine = o => hasCredit(o, uids);
   const fyOrders = S.orders.filter(o => o.orderDate >= fy && mine(o));
 
   // Split on purpose. A flat "past its SLA" check flagged 456 of 469 open
@@ -4769,12 +4799,11 @@ function exportRows(set, uids, from, to){
   };
   switch (set) {
     case 'orders':   return S.orders
-      .filter(o => (!o.bookedBy || uids.includes(o.bookedBy)) && inRange(o.orderDate));
+      .filter(o => hasCredit(o, uids) && inRange(o.orderDate));
     case 'orderLines': {
       const out = [];
       S.orders
-        .filter(o => (!o.bookedBy || uids.includes(o.bookedBy))
-                     && inRange(o.orderDate))
+        .filter(o => hasCredit(o, uids) && inRange(o.orderDate))
         .forEach(o => (o.items || []).forEach(x => out.push({ o, x })));
       return out;
     }
@@ -5634,7 +5663,7 @@ function feedRows(uids, from, to){
     const d = String(o.orderDate || '').slice(0, 10);
     if (d < from || d > to) return;
     if (covered.has(o.id)) return;
-    if (o.bookedBy && !uids.includes(o.bookedBy)) return;
+    if (!hasCredit(o, uids)) return;
     rows.push({ date:d, time:String(o.orderDate||'').slice(11,16),
       accountId:o.accountId, account:accName(o.accountId),
       type:'Order', by:o.bookedBy, remarks:'', stage:CLOSED, order:o });

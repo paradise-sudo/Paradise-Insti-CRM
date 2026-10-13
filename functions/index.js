@@ -614,8 +614,15 @@ exports.calculateIncentive = functions.region(REGION).https.onCall(async (data, 
   /* Revenue follows CREDIT, not authorship. An order booked on somebody
      else's account carries a creditSplit - a map of user id to fraction -
      settled once by Ayush and then reused for that account. No split means
-     it all belongs to whoever booked it, which covers every imported row
-     and every order on a rep's own account. */
+     it all belongs to whoever booked it, which covers every order on a
+     rep's own account.
+
+     Imported rows carry a split too, since 13-Oct-26: 45 FY27 invoices were
+     worked by two reps and logged by both, and the importer now emits one
+     order at full value with half the credit each rather than two orders at
+     full value. Nothing here had to change for that - this already paid on
+     the share - but the old comment claimed imports never carried a split,
+     and that is no longer true. */
   ordersSnap.forEach(d => {
     const o = d.data();
     const split = o.creditSplit
