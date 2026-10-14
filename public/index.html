@@ -1440,7 +1440,16 @@ function stageExtra(){
       </div>`;
   }
 
-  if (s === CLOSED && account.owner && account.owner !== S.me.id) {
+  if (s === CLOSED && account.owner && account.owner !== S.me.id
+      && S.me.role === 'admin') {
+    // The head entering a rep's order is not claiming it, so he is told what
+    // will happen rather than asked a question about himself.
+    h += `<div class="banner">This is
+       <b>${esc(userName(account.owner))}</b>'s account, and you are the head —
+       so this order counts to ${esc(userName(account.owner))} in full, against
+       ${esc(userName(account.owner))}'s target. Your own name is recorded as
+       the person who entered it.</div>`;
+  } else if (s === CLOSED && account.owner && account.owner !== S.me.id) {
     const ap = splitFor(account.id, S.me.id);
     const pd = pendingSplit(account.id, S.me.id);
     h += `<div class="banner">${ap
@@ -1881,7 +1890,17 @@ async function saveLog(){
          rather than pointing at the rule, so a split changed in March cannot
          silently restate January. */
       const owner = account.owner;
-      const offTeam = owner && owner !== S.me.id;
+      /* The head entering an order on a rep's account is not claiming it.
+         Ayush closes Compass himself and logs it, and he fills in for a rep
+         who is travelling - and the credit-split rule, written for one rep
+         booking on another's account, read that as a claim: it credited the
+         order 100% to him and raised a split request addressed to himself,
+         which nobody would ever approve because it does not look like a
+         question. Rs 12L of the team's revenue ended up on his own line.
+         He has no individual target - his number is the sum of everyone's -
+         so the order goes to whoever owns the account. */
+      const onBehalf = S.me.role === 'admin' && owner && owner !== S.me.id;
+      const offTeam = !onBehalf && owner && owner !== S.me.id;
       const approved = offTeam ? splitFor(account.id, S.me.id) : null;
       const already  = offTeam ? pendingSplit(account.id, S.me.id) : null;
 
@@ -1907,7 +1926,12 @@ async function saveLog(){
         commissionValue: itemTotals(S.logItems, S.logComm).comm,
         netRealisation: itemTotals(S.logItems, S.logComm).net
       };
-      if (approved) {
+      if (onBehalf) {
+        // bookedBy still says who typed it, so the audit trail survives
+        orderData.creditSplit = { [owner]: 1 };
+        orderData.creditPending = false;
+        orderData.enteredOnBehalf = true;
+      } else if (approved) {
         orderData.creditSplit = { [S.me.id]: approved.pct,
                                   [owner]: round4(1 - approved.pct) };
         orderData.creditPending = false;
@@ -2129,7 +2153,8 @@ function viewDash() {
     return;
   }
 
-  const ord = ordersCredited(from, to, uids);
+  const ordRaw = ordersIn(from, to, uids);
+  const ord = creditView(ordRaw, uids);
   const net = ord.reduce((n, o) => n + (o.value || 0), 0);
   const tgt = targetForRange(from, to, uids);
   const ach = tgt ? net / tgt : 0;
@@ -2296,9 +2321,15 @@ function viewDash() {
   }).join('');
 
   // ---- per rep ------------------------------------------------------------
-  const perRep = uids.map(id => {
+  /* The head is never a line here. He carries no individual target - his
+     number is the sum of everyone's - so a row for him is always either a
+     zero or somebody else's revenue wearing his name. */
+  const repIds = uids.filter(id => (S.byId[id] || {}).role !== 'admin');
+  const perRep = repIds.map(id => {
     // credit, not authorship: a split order counts part to each of them
-    const mine = ord.filter(o => creditOf(o, id) > 0);
+    // ordRaw, not ord: ord is already restated to the team's share, and
+    // taking a person's share of that would halve a shared order twice.
+    const mine = ordRaw.filter(o => creditOf(o, id) > 0);
     const v = mine.reduce((n, o) => n + creditOf(o, id), 0);
     const t = targetForRange(from, to, [id]);
     return { id, name: userName(id), v, t, a: t ? v / t : 0, n: mine.length };
@@ -2307,8 +2338,8 @@ function viewDash() {
   /* Forecast against outturn, per rep. Expected Business is only on orders
      logged in the app or loaded by a seed built after 1-Oct-26, so a rep with
      no forecast on file is left out rather than shown as 0% accurate. */
-  const fcRep = uids.map(id => {
-    const mine = ord.filter(o => creditOf(o, id) > 0 && o.expectedValue);
+  const fcRep = repIds.map(id => {
+    const mine = ordRaw.filter(o => creditOf(o, id) > 0 && o.expectedValue);
     const exp = mine.reduce((n, o) => n + (o.expectedValue || 0), 0);
     const act = mine.reduce((n, o) => n + creditOf(o, id), 0);
     return { id, name: userName(id), n: mine.length, exp, act,
@@ -2321,6 +2352,14 @@ function viewDash() {
 
   const unowned = ord.filter(o => !o.bookedBy);
   const unownedVal = unowned.reduce((n, o) => n + (o.value || 0), 0);
+
+  /* Net sales is the company's; the rep table is the sum of people. Dropping
+     the head from the table means the two can now disagree - an order still
+     credited to him, or to nobody, is in the first and in no row of the
+     second. Say so where it shows, with the figure, rather than leaving
+     someone to find a 12 lakh gap by subtracting two cards. */
+  const repSum = perRep.reduce((n, r) => n + r.v, 0);
+  const offRep = Math.round(net - repSum);
 
   $('#view').innerHTML = `
     <div class="grid2" style="margin-bottom:14px">
@@ -2523,6 +2562,13 @@ function viewDash() {
       <p class="hint" style="margin-top:10px">Targets are monthly, so a
         part-month range is pro-rated by days — a ten-day range carries
         about a third of the month.</p>
+      ${Math.abs(offRep) > 999 ? `<p class="hint"
+        style="margin-top:6px;color:var(--warn)">${inr(Math.abs(offRep))} of
+        net sales is on no rep's line${offRep < 0 ? ' (the rows total more '
+        + 'than net sales)' : ''}, so Team above does not match the Net sales
+        tile. That is an order with no owner, or one still credited to the
+        head — who carries no individual target. Admin → the orders export
+        shows which.</p>` : ''}
       <div class="list" style="margin-top:12px">
         ${perRep.length ? perRep.map(r => `
           <div class="it" style="cursor:default;align-items:flex-start;
@@ -3034,13 +3080,15 @@ const creditTo = (o, uids) => o.creditSplit
    Quantities on the product lines are deliberately NOT scaled: 40 half
    plates is not a thing that was sold, and the mix answers what went out of
    the kitchen, not whose revenue it was. */
-function ordersCredited(from, to, uids){
-  return ordersIn(from, to, uids).map(o => {
+function creditView(list, uids){
+  return list.map(o => {
     const f = (o.value || 0) ? creditTo(o, uids) / o.value : 1;
     return f === 1 ? o : { ...o, value: creditTo(o, uids),
                            expectedValue: (o.expectedValue || 0) * f };
   });
 }
+const ordersCredited = (from, to, uids) =>
+  creditView(ordersIn(from, to, uids), uids);
 
 /* Admin: the queue. Shown as a nav badge so a pending split cannot sit
    unnoticed while the month closes around it. */
