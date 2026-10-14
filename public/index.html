@@ -1895,7 +1895,16 @@ async function saveLog(){
 
   btn.disabled = true; btn.textContent = 'Saving…'; lmsg('');
   try {
-    const when = val('adate') ? new Date(val('adate')) : today();
+    /* asDate, not new Date. A date input gives '2026-10-13', and
+       new Date('2026-10-13') is parsed as UTC midnight - which in India is
+       05:30 the same morning. stamp() then wrote 2026-10-13T05:30:00 onto
+       every activity, order and stage change logged in the app, so the entry
+       log showed an entire team starting work at 5.30am. asDate appends
+       T00:00:00 and is parsed local, which is what the rep meant by the date
+       they picked. The day was right here only because India is ahead of UTC;
+       west of Greenwich the same line would have logged everything a day
+       early. */
+    const when = val('adate') ? asDate(val('adate')) : today();
     const batch = writeBatch(db);
 
     // contact, if the rep filled one in
@@ -5734,7 +5743,34 @@ function historyOne(accId){
    A rep sees their own. A manager sees their team. Nobody has to trust a
    total without being able to look at the rows behind it.                */
 
+/* The stage a deal was AT on a given day, not the stage it is at now.
+
+   The log showed opp.stage against every past entry, so moving a deal
+   rewrote its own history: Paytm's 4 October close - Rs 8,295 billed,
+   payment received at store - read "Cancelled", because the deal was
+   cancelled afterwards. A log is a record of what happened. */
+function stageAtFor(){
+  const by = {};
+  (S.hist || []).forEach(h =>
+    (by[h.opportunityId] = by[h.opportunityId] || []).push(h));
+  Object.values(by).forEach(a => a.sort((x, y) =>
+    String(x.changedAt).localeCompare(String(y.changedAt))));
+  return (oppId, day, fallback) => {
+    const a = by[oppId];
+    if (!a || !a.length) return fallback;
+    let s = null;
+    for (const h of a) {
+      if (String(h.changedAt).slice(0, 10) <= day) s = h.toStage;
+      else break;
+    }
+    // Before the first recorded move, what it moved FROM is what it was.
+    if (s == null) s = a[0].fromStage;
+    return s == null ? fallback : s;
+  };
+}
+
 function feedRows(uids, from, to){
+  const stageAt = stageAtFor();
   const acts = (S.acts || []).filter(a => {
     if (!uids.includes(a.loggedBy)) return false;
     const d = String(a.loggedAt || '').slice(0, 10);
@@ -5761,7 +5797,9 @@ function feedRows(uids, from, to){
       type: a.type || 'Contact',
       by: a.loggedBy,
       remarks: a.remarks || '',
-      stage: opp ? opp.stage : null,
+      // An entry that carries an order closed that day, by definition.
+      stage: orderKey[a.opportunityId + '|' + d]
+        ? CLOSED : stageAt(a.opportunityId, d, opp ? opp.stage : null),
       order: orderKey[a.opportunityId + '|' + d] || null
     };
   });
