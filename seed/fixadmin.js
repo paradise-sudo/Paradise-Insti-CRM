@@ -148,8 +148,40 @@ const inr = n => 'Rs ' + Math.round(n).toLocaleString('en-IN');
   });
   console.log('\npending split requests raised by an admin: ' + stale.length);
 
+  /* --list prints everything the app has written, by whoever wrote it. The
+     seed never sets channel 'app', so this is exactly the set of orders
+     typed into the CRM - which is where a test close from a build session
+     would be hiding. Worth looking at before moving anything: reassigning a
+     test order to a rep is worse than leaving it where it is. */
+  if (args.includes('--list')) {
+    const app = orders.docs.map(d => ({ id: d.id, o: d.data() || {} }))
+      .filter(x => x.o.channel === 'app')
+      .sort((a, b) => String(a.o.orderDate).localeCompare(String(b.o.orderDate)));
+    console.log('\n--- every order logged in the app: ' + app.length + ', '
+      + inr(app.reduce((n, x) => n + (x.o.value || 0), 0)) + ' ---');
+    const by = {};
+    app.forEach(x => {
+      const k = x.o.bookedBy || '(nobody)';
+      by[k] = by[k] || { n: 0, v: 0 };
+      by[k].n++; by[k].v += x.o.value || 0;
+    });
+    Object.entries(by).sort((a, b) => b[1].v - a[1].v).forEach(([u, s]) =>
+      console.log('   ' + (name[u] || u).padEnd(14) + String(s.n).padStart(4)
+        + ' orders   ' + inr(s.v)));
+    console.log('');
+    app.forEach(x => console.log('   ' + String(x.o.orderDate || '').slice(0, 10)
+      + '  ' + inr(x.o.value || 0).padStart(14)
+      + '  ' + (name[x.o.bookedBy] || '?').padEnd(12)
+      + '  ' + (accName[x.o.accountId] || '?').slice(0, 26).padEnd(26)
+      + '  inv ' + String(x.o.invoiceNumber || '-').slice(0, 20).padEnd(20)
+      + '  ' + x.id));
+    console.log('\nAnything here you do not recognise is a test close. Delete '
+      + 'those rather than moving them onto a rep.');
+  }
+
   if (!APPLY) {
-    console.log('\nRe-run with --apply to make these changes.');
+    console.log('\nRe-run with --apply to make these changes, or --list to see '
+      + 'every order the app has written.');
     process.exit(0);
   }
 
