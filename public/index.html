@@ -1492,6 +1492,7 @@ function stageExtra(){
               opp && opp.businessType === t ? ' selected' : ''}>${esc(t)}</option>`
             ).join('')}</select></div>
       </div>
+      <div id="invWarn"></div>
       <div id="itemsBox" style="margin-bottom:12px"></div>
       <input type="hidden" id="ov">
       <p class="hint">Invoice number, store, payment status, type of business
@@ -1533,7 +1534,10 @@ function stageExtra(){
      nagging rather than helping: the box's own button is the way back in. */
   if (s === CLOSED) {
     paintItems();
+    paintInvWarn();
+    $('#inv').oninput = paintInvWarn;
     $('#inv').onchange = () => {
+      paintInvWarn();
       if (document.querySelector('#modal')) return;
       if (S.invPrompted) return;
       if ($('#inv').value.trim() && !(S.logItems || []).length) {
@@ -1547,6 +1551,54 @@ function stageExtra(){
   if (sel) sel.onchange = () => {
     $('#asgnWhyWrap').style.display = (an && sel.value===an.id) ? 'none' : '';
   };
+}
+
+/* ----------------------------------------------- the same bill, logged twice
+   Splitting the credit on approval settles WHOSE an order is. It cannot
+   settle whether two rows are the same order, because each row gets its own
+   split and both are right about the credit while the company total is
+   double. That is how the DCR carried Rs 89.7 lakh of the same invoices
+   twice - 21.6% of FY27, almost all of it Compass CPU Hyd, worked by two reps
+   who each logged the closure.
+
+   The invoice number is the one thing that identifies a bill, so it is
+   checked as it is typed. Not blocked outright: the workbook shows the same
+   reference carrying different amounts - CIFSPL270715 has three - so a real
+   second bill under one weekly reference has to remain loggable. It is shown,
+   with the order it clashes with, and the rep has to say it is a different
+   bill. That is enough friction to stop the reflex without standing in the
+   way of a real one. */
+function invoiceClash(inv){
+  const k = norm(inv);
+  if (!k) return [];
+  return S.orders.filter(o => norm(o.invoiceNumber || '') === k);
+}
+
+function paintInvWarn(){
+  const box = $('#invWarn');
+  if (!box) return;
+  const el = $('#inv');
+  const hits = invoiceClash(el ? el.value.trim() : '');
+  if (!hits.length) { box.innerHTML = ''; return; }
+  box.innerHTML = `<div class="banner" style="margin-top:10px">
+    <b>That invoice number is already on ${hits.length === 1 ? 'an order'
+      : hits.length + ' orders'}.</b>
+    ${hits.slice(0, 3).map(o => `<div class="sm" style="margin-top:4px">
+      ${esc(String(o.orderDate || '').slice(0,10))} ·
+      ${esc(accName(o.accountId))} · <b>${inrx(o.value || 0)}</b> ·
+      ${o.creditSplit
+        ? esc(Object.entries(o.creditSplit)
+            .map(([u,p]) => userName(u) + ' ' + Math.round(p*100) + '%').join(' / '))
+        : esc(o.bookedBy ? userName(o.bookedBy) : 'no rep')}</div>`).join('')}
+    <p class="sm" style="margin:8px 0 0">If this is the same bill somebody has
+      already logged, do not log it again — the credit split on that order is
+      what shares it between you. Log it again only if this is a different
+      bill that happens to carry the same reference.</p>
+    <label class="selbox" style="display:inline-flex;gap:8px;align-items:center;
+      cursor:pointer;font-size:13px;margin-top:8px">
+      <input type="checkbox" id="invOk">
+      <span>This is a different bill</span></label>
+  </div>`;
 }
 
 /* ------------------------------------------------------- order line items
@@ -1809,6 +1861,16 @@ async function saveLog(){
 
   if (s === CLOSED) {
     if (!val('inv')) return lmsg('Invoice number is required to close.','err');
+    /* Splitting the credit settles whose an order is, not whether it is the
+       same order. Two reps logging one invoice is how the DCR carried
+       Rs 89.7 lakh twice, so the number is checked before it can happen
+       again. */
+    if (invoiceClash(val('inv')).length
+        && !($('#invOk') && $('#invOk').checked))
+      return lmsg('Invoice ' + val('inv') + ' is already on another order. If '
+        + 'somebody has already logged this bill, the credit split on it is '
+        + 'what shares it with you \u2014 do not log it twice. Tick "this is a '
+        + 'different bill" if it really is one.','err');
     /* Mandatory on every closed order. Set by Ayush, 6-Oct-26: partial
        capture would make the mix report a guess dressed up as a number. */
     if (!(S.logItems || []).length)
