@@ -2362,9 +2362,12 @@ function viewDash() {
 
      Billed comes from the orders themselves, so the C4 row ties to Net sales
      at the top rather than being a second, quietly different figure. */
-  const billedByOpp = {};
-  ord.forEach(o => billedByOpp[o.opportunityId] =
-    (billedByOpp[o.opportunityId] || 0) + (o.value || 0));
+  const billedByOpp = {}, ordersByOpp = {};
+  ord.forEach(o => {
+    billedByOpp[o.opportunityId] =
+      (billedByOpp[o.opportunityId] || 0) + (o.value || 0);
+    ordersByOpp[o.opportunityId] = (ordersByOpp[o.opportunityId] || 0) + 1;
+  });
 
   const movedIn = S.opps.filter(o => {
     if (!oursDeal(o, uids)) return false;
@@ -2377,7 +2380,13 @@ function viewDash() {
     const rows = movedIn.filter(o => o.stage === i);
     return { i, k: st.k, n: rows.length,
              exp: rows.reduce((n, o) => n + (o.expectedValue || 0), 0),
-             act: rows.reduce((n, o) => n + (billedByOpp[o.id] || 0), 0) };
+             act: rows.reduce((n, o) => n + (billedByOpp[o.id] || 0), 0),
+             /* One deal is not one invoice. An account that ordered four
+                times in October is four orders on one deal, and a bill two
+                reps logged is two orders on one deal, so "3 deals" sitting
+                beside a headline of "9 orders" reads as a contradiction when
+                it is two different units. */
+             ords: rows.reduce((n, o) => n + (ordersByOpp[o.id] || 0), 0) };
   });
   const volTot = volRows.reduce((n, r) => n + r.n, 0);
   /* Money billed in this range on a deal whose stage last moved OUTSIDE it -
@@ -2547,20 +2556,34 @@ function viewDash() {
         volRows.filter(r => r.n).map(r => ({ click:r.i < 5 ? r.i : null, c:[
           `<span class="tag" style="background:var(${STAGES[r.i].v})">${r.k}</span>
            <span class="sm muted">${esc(STAGES[r.i].n)}</span>`,
-          String(r.n), inr(r.exp), r.act ? inr(r.act) : '—',
+          String(r.n), inr(r.exp),
+          r.act ? inr(r.act) + (r.ords ? `<div class="sm muted">${r.ords}
+            order${r.ords === 1 ? '' : 's'}</div>` : '') : '—',
           volTot ? (r.n/volTot*100).toFixed(0) + '%' : '—'] })),
         ['Total', String(volTot),
          inr(volRows.reduce((n,r) => n + r.exp, 0)),
-         inr(volRows.reduce((n,r) => n + r.act, 0)), '100%'])
+         inr(volBilled) + `<div class="sm muted">${
+           volRows.reduce((n,r) => n + r.ords, 0)} orders</div>`, '100%'])
         : '<div class="empty">No deal changed stage in this range.</div>'}
+      ${volTot ? `<div class="card" style="margin:12px 0 0;padding:10px 12px">
+        <div class="sm muted" style="margin-bottom:6px">How Billed reconciles
+          to Net sales</div>
+        <div style="display:flex"><span style="flex:1">Billed on deals that
+          moved stage in this range</span><b>${inr(volBilled)}</b></div>
+        <div style="display:flex"><span style="flex:1">Billed on deals that
+          last moved earlier — agreed one month, invoiced the next</span>
+          <b>${inr(volElsewhere)}</b></div>
+        <div style="display:flex;border-top:1px solid var(--line);
+          margin-top:6px;padding-top:6px">
+          <span style="flex:1"><b>Net sales</b></span><b>${inr(net)}</b></div>
+      </div>` : ''}
       <p class="hint" style="margin-top:10px">Deals that <b>moved into</b> each
         stage between ${esc(from)} and ${esc(to)} — not every deal sitting
         there today. ${ab('C4')} and cancelled are included, because how many
         were lost is the other half of the story. Tap an open stage for its
-        deals.${Math.abs(volElsewhere) > 1 ? ` A further <b>${inr(volElsewhere)}</b>
-        was billed in this range on deals that last changed stage outside it
-        — agreed one month, invoiced the next — so Billed here does not
-        add up to Net sales, and is not meant to.` : ''}</p>
+        deals. <b>Deals are not invoices</b>: an account that ordered four
+        times is four orders on one deal, so the order count is under each
+        Billed figure.</p>
     </div>
 
     <div class="grid2" style="margin-bottom:14px">
