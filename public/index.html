@@ -1574,30 +1574,37 @@ function invoiceClash(inv){
   return S.orders.filter(o => norm(o.invoiceNumber || '') === k);
 }
 
+/* What one bill is worth, however many ways it has already been split. */
+const invoiceFullOf = o => o.invoiceFull || (o.value || 0);
+
 function paintInvWarn(){
   const box = $('#invWarn');
   if (!box) return;
   const el = $('#inv');
   const hits = invoiceClash(el ? el.value.trim() : '');
   if (!hits.length) { box.innerHTML = ''; return; }
+
+  const full = invoiceFullOf(hits[0]);
+  const ways = hits.length + 1;
+  const each = round2(full / ways);
+  const mine = Number(digits(($('#ov') || {}).value || '')) || 0;
+  const differs = mine && Math.abs(mine - full) > 1;
+
   box.innerHTML = `<div class="banner" style="margin-top:10px">
-    <b>That invoice number is already on ${hits.length === 1 ? 'an order'
-      : hits.length + ' orders'}.</b>
-    ${hits.slice(0, 3).map(o => `<div class="sm" style="margin-top:4px">
+    <b>${esc(userName(hits[0].bookedBy))} has already logged this bill.</b>
+    That is the split working — you both worked it, so you both keep an order
+    and it is shared between you.
+    ${hits.map(o => `<div class="sm" style="margin-top:4px">
       ${esc(String(o.orderDate || '').slice(0,10))} ·
-      ${esc(accName(o.accountId))} · <b>${inrx(o.value || 0)}</b> ·
-      ${o.creditSplit
-        ? esc(Object.entries(o.creditSplit)
-            .map(([u,p]) => userName(u) + ' ' + Math.round(p*100) + '%').join(' / '))
-        : esc(o.bookedBy ? userName(o.bookedBy) : 'no rep')}</div>`).join('')}
-    <p class="sm" style="margin:8px 0 0">If this is the same bill somebody has
-      already logged, do not log it again — the credit split on that order is
-      what shares it between you. Log it again only if this is a different
-      bill that happens to carry the same reference.</p>
-    <label class="selbox" style="display:inline-flex;gap:8px;align-items:center;
-      cursor:pointer;font-size:13px;margin-top:8px">
-      <input type="checkbox" id="invOk">
-      <span>This is a different bill</span></label>
+      ${esc(accName(o.accountId))} ·
+      ${esc(userName(o.bookedBy))} <b>${inrx(o.value || 0)}</b></div>`).join('')}
+    <p class="sm" style="margin:8px 0 0">The bill is
+      <b>${inrx(full)}</b>. Saving makes it <b>${inrx(each)}</b> each, ${ways}
+      ways, and ${ways === 2 ? 'the other order is' : 'the other orders are'}
+      adjusted to match.</p>
+    ${differs ? `<p class="sm" style="margin:6px 0 0;color:var(--warn)">
+      Your lines come to ${inrx(mine)}, not ${inrx(full)}. One of you has the
+      bill wrong — worth settling before you save.</p>` : ''}
   </div>`;
 }
 
@@ -1861,16 +1868,10 @@ async function saveLog(){
 
   if (s === CLOSED) {
     if (!val('inv')) return lmsg('Invoice number is required to close.','err');
-    /* Splitting the credit settles whose an order is, not whether it is the
-       same order. Two reps logging one invoice is how the DCR carried
-       Rs 89.7 lakh twice, so the number is checked before it can happen
-       again. */
-    if (invoiceClash(val('inv')).length
-        && !($('#invOk') && $('#invOk').checked))
-      return lmsg('Invoice ' + val('inv') + ' is already on another order. If '
-        + 'somebody has already logged this bill, the credit split on it is '
-        + 'what shares it with you \u2014 do not log it twice. Tick "this is a '
-        + 'different bill" if it really is one.','err');
+    /* A second rep on one bill is the normal case and goes straight
+       through. It is not stored as two full orders - that is what put
+       Rs 89.7 lakh into FY27 twice - but as one order each at a share, done
+       in the batch below. */
     /* Mandatory on every closed order. Set by Ayush, 6-Oct-26: partial
        capture would make the mix report a guess dressed up as a number. */
     if (!(S.logItems || []).length)
@@ -1955,7 +1956,7 @@ async function saveLog(){
     });
 
     // order, only on close
-    let raiseSplit = null;
+    let raiseSplit = null, sharedNote = null;
     if (s === CLOSED) {
       /* Whose target does this count toward? An order carries its own split
          rather than pointing at the rule, so a split changed in March cannot
@@ -2016,7 +2017,63 @@ async function saveLog(){
           firstValue: orderData.value, requestedAt: stamp(when)
         };
       }
-      batch.set(doc(collection(db,'orders')), orderData);
+      /* One bill, two reps, two orders - set by Ayush, 14-Oct-26. Both of
+         them worked it and both logged it, so both keep an order of their
+         own; the sharing is in the VALUE rather than in a credit map, so the
+         halves add back to the bill and no screen has to know about the
+         arrangement to total it correctly.
+
+         Saving the second one restates the first. That is the only way the
+         parts can keep adding up: the first rep logged the whole bill
+         because, at the time, it was all his. */
+      const orderRef = doc(collection(db,'orders'));
+      const sharers = invoiceClash(val('inv'));
+      if (sharers.length) {
+        const full  = invoiceFullOf(sharers[0]);
+        const ways  = sharers.length + 1;
+        const each  = round2(full / ways);
+        // The first order absorbs the rounding, so the parts total the bill
+        // to the paisa instead of leaving a stray rupee off the invoice.
+        const first = round2(full - each * (ways - 1));
+        const group = sharers[0].splitGroup || orderRef.id;
+        const who   = [S.me.id, ...sharers.map(o => o.bookedBy).filter(Boolean)];
+
+        sharers.forEach((o, n) => {
+          batch.update(doc(db,'orders',o.id), {
+            value: n === 0 ? first : each,
+            expectedValue: round2((o.expectedValue || 0) * (o.splitWays || 1) / ways),
+            invoiceFull: full, splitWays: ways, splitGroup: group,
+            splitWith: who.filter(u => u !== o.bookedBy)
+          });
+          // keep the screen honest without waiting for the listener
+          Object.assign(o, { value: n === 0 ? first : each,
+                             invoiceFull: full, splitWays: ways,
+                             splitGroup: group });
+        });
+
+        orderData.value = each;
+        orderData.expectedValue = round2((orderData.expectedValue || 0) / ways);
+        orderData.invoiceFull = full;
+        orderData.splitWays = ways;
+        orderData.splitGroup = group;
+        orderData.splitWith = who.filter(u => u !== S.me.id);
+        sharedNote = { full, each, ways,
+                       with: sharers.map(o => userName(o.bookedBy)) };
+
+        /* Two mechanisms answer "whose is this?" and only one of them
+           applies here. The account credit split is for a rep booking on
+           somebody else's account, where nobody else has logged the deal and
+           Ayush has to decide the share. When both reps have logged the same
+           BILL, the share is already settled - half each, in the value - and
+           asking him again would apply a second fraction on top of the
+           first: a 70/30 approval would make Sameer's half into 70% of a
+           half. So the request is withdrawn and the order belongs wholly to
+           the rep whose order it is. */
+        delete orderData.creditSplit;
+        delete orderData.creditPending;
+        raiseSplit = null;
+      }
+      batch.set(orderRef, orderData);
       if (raiseSplit) batch.set(doc(collection(db,'creditSplits')), raiseSplit);
     }
 
@@ -2031,6 +2088,11 @@ async function saveLog(){
     S.holdLog = true;        // a live repaint must not wipe this confirmation
     $('#logForm').innerHTML = `<div class="card"><h2>Saved</h2>
       <p>${esc(account.name)} logged at ${ab(STAGES[s].k)}.</p>
+      ${sharedNote ? `<p class="sm">This bill of
+        <b>${inrx(sharedNote.full)}</b> is shared with
+        ${esc(sharedNote.with.join(' and '))}, so it is
+        <b>${inrx(sharedNote.each)}</b> each, ${sharedNote.ways} ways. Their
+        order has been adjusted to match.</p>` : ''}
       ${raiseSplit ? `<p class="sm" style="color:var(--warn)">Ayush has been
         asked how the credit on this account splits with
         ${esc(userName(raiseSplit.owner))}. It counts to you in full until he
@@ -4839,6 +4901,9 @@ const EX_SETS = {
     ['Payment',    o => o.paymentStatus || ''],
     ['Channel',    o => o.channel || ''],
     ['Type of business', o => o.businessType || ''],
+    ['Shared ways',    o => o.splitWays || 1],
+    ['Full bill',      o => o.invoiceFull || o.value || 0],
+    ['Shared with',    o => (o.splitWith || []).map(userName).join(', ')],
     ['What was sold',  o => itemsLine(o)],
     ['Discount',   o => o.discountTotal || 0],
     ['Commission %', o => o.commissionPct || 0],
@@ -5878,6 +5943,12 @@ function viewFeed(){
       style="color:var(--warn)">Credit split not settled yet</div>` : ''}
     ${r.order && r.order.businessType
       ? `<div class="sm"><b>${esc(r.order.businessType)}</b></div>` : ''}
+    ${r.order && r.order.splitWays > 1 ? `<div class="sm"
+      style="color:var(--warn)">Your ${
+        Math.round(100 / r.order.splitWays)}% of a ${
+        inrx(r.order.invoiceFull || 0)} bill shared with ${
+        esc((r.order.splitWith || []).map(userName).join(' and ')) || 'another rep'
+      }</div>` : ''}
     ${r.order && (r.order.items || []).length
       ? `<div class="sm">${esc(itemsLine(r.order))}${
           Number(r.order.commissionPct)
