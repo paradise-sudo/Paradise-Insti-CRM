@@ -1019,7 +1019,7 @@ function live(name){
       if (name === 'meta') applyConfig();
       if (name === 'contacts')   S.contactsReady = true;
       if (name === 'activities') S.histReady = true;
-      if (name === 'orders')     badgeExceptions();
+      if (name === 'orders')   { S.ordersReady = true; badgeExceptions(); }
       if (name === 'creditSplits' && S.me && S.me.role === 'admin') {
         setNavCount('admin', pendingSplits().length);
       }
@@ -1062,6 +1062,19 @@ function flushRepaint(){
   S.dirty = false;
   go(S.view);
 }
+
+/* Nothing has arrived yet, and nothing is there, are different things. The
+   screens used an empty orders array to mean the first - so a database with
+   no orders in it sat on a spinner that never stopped, which is the worst
+   way to say "there is no data". */
+const loadingOrders = what => `<div class="card"><div class="empty">
+  <span class="spin"></span><br><br>Loading ${what || 'orders'}\u2026</div></div>`;
+const noOrdersAtAll = () => `<div class="card"><div class="empty">
+  <b>There are no orders in the database.</b><br><br>
+  <span class="sm">Every revenue figure reads zero until the DCR is loaded.
+  If a reset has just been run, the rebuild is the step that puts it back:
+  <br><code>cd seed &amp;&amp; python3 build_seed.py &amp;&amp; node load_seed.js</code>
+  </span></div></div>`;
 
 /* ==================================================================== NAV */
 const VIEWS = {
@@ -2287,11 +2300,8 @@ function viewDash() {
   const uids = dashFilterIds();
   const { from, to } = S.range;
 
-  if (!S.orders.length) {
-    $('#view').innerHTML = `<div class="card"><div class="empty">
-      <span class="spin"></span><br><br>Loading orders…</div></div>`;
-    return;
-  }
+  if (!S.ordersReady) { $('#view').innerHTML = loadingOrders(); return; }
+  if (!S.orders.length) { $('#view').innerHTML = noOrdersAtAll(); return; }
 
   const ordRaw = ordersIn(from, to, uids);
   const ord = creditView(ordRaw, uids);
@@ -4055,7 +4065,7 @@ function orderRow(o){
 
 /* The drawer badge, so the number is visible without opening the screen. */
 function badgeExceptions(){
-  if (!S.me || !S.orders.length) return;
+  if (!S.me || !S.ordersReady) return;
   try {
     setNavCount('exception',
       exceptionSets(repFilterIds()).reduce((n,s) => n + s.rows.length, 0));
@@ -4064,11 +4074,8 @@ function badgeExceptions(){
 
 function viewExceptions(){
   const uids = repFilterIds();
-  if (!S.orders.length) {
-    $('#view').innerHTML = `<div class="card"><div class="empty">
-      <span class="spin"></span><br><br>Loading orders…</div></div>`;
-    return;
-  }
+  if (!S.ordersReady) { $('#view').innerHTML = loadingOrders(); return; }
+  if (!S.orders.length) { $('#view').innerHTML = noOrdersAtAll(); return; }
   const sets  = exceptionSets(uids);
   const total = sets.reduce((n,s) => n + s.rows.length, 0);
   setNavCount('exception', total);
@@ -4124,11 +4131,8 @@ function viewExceptions(){
    makes it actionable.                                                    */
 function viewWinback(){
   const uids = repFilterIds();
-  if (!S.orders.length) {
-    $('#view').innerHTML = `<div class="card"><div class="empty">
-      <span class="spin"></span><br><br>Loading orders…</div></div>`;
-    return;
-  }
+  if (!S.ordersReady) { $('#view').innerHTML = loadingOrders(); return; }
+  if (!S.orders.length) { $('#view').innerHTML = noOrdersAtAll(); return; }
   const fy = FY_START();
   const last = {}, prior = {}, thisFy = {};
   S.orders.forEach(o => {
@@ -4209,11 +4213,8 @@ function viewWinback(){
    an incentive argument starts.                                          */
 function viewShared(){
   const uids = repFilterIds();
-  if (!S.orders.length) {
-    $('#view').innerHTML = `<div class="card"><div class="empty">
-      <span class="spin"></span><br><br>Loading orders…</div></div>`;
-    return;
-  }
+  if (!S.ordersReady) { $('#view').innerHTML = loadingOrders(); return; }
+  if (!S.orders.length) { $('#view').innerHTML = noOrdersAtAll(); return; }
   const fy = FY_START();
 
   const shared = S.accounts
@@ -4466,7 +4467,7 @@ function guessMap(headers, cols){
 
 function viewData(){
   const uids = repFilterIds();
-  const ready = S.orders.length > 0;
+  const ready = !!S.ordersReady;
   S.upKind = S.upKind || 'contacts';
 
   const counts = [
@@ -5608,7 +5609,10 @@ function clientHistory(accId){
 function viewHistory(){
   const uids = repFilterIds();
 
-  if (!S.orders.length || !S.histReady) {
+  if (S.ordersReady && !S.orders.length) {
+    $('#view').innerHTML = noOrdersAtAll(); return;
+  }
+  if (!S.ordersReady || !S.histReady) {
     $('#view').innerHTML = `<div class="card"><div class="empty">
       <span class="spin"></span><br><br>Loading the history…<br>
       <span class="sm">Activities and stage changes are only fetched for this
@@ -5939,9 +5943,11 @@ function viewFeed(){
   const uids = repFilterIds();
   const { from, to } = S.range;
 
-  if (!S.orders.length || !S.histReady) {
-    $('#view').innerHTML = `<div class="card"><div class="empty">
-      <span class="spin"></span><br><br>Loading the log…</div></div>`;
+  if (S.ordersReady && !S.orders.length) {
+    $('#view').innerHTML = noOrdersAtAll(); return;
+  }
+  if (!S.ordersReady || !S.histReady) {
+    $('#view').innerHTML = loadingOrders('the log');
     loadHistory().then(() => { if (S.view === 'feed') viewFeed(); }).catch(() => {});
     return;
   }
