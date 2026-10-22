@@ -617,12 +617,18 @@ exports.calculateIncentive = functions.region(REGION).https.onCall(async (data, 
      it all belongs to whoever booked it, which covers every order on a
      rep's own account.
 
-     Imported rows carry a split too, since 13-Oct-26: 45 FY27 invoices were
-     worked by two reps and logged by both, and the importer now emits one
-     order at full value with half the credit each rather than two orders at
-     full value. Nothing here had to change for that - this already paid on
-     the share - but the old comment claimed imports never carried a split,
-     and that is no longer true. */
+     Imported rows never carry a split. A bill worked by two reps appears in
+     the DCR as one row per rep ALREADY HOLDING THAT REP'S SHARE (Ayush,
+     22-Oct-26: "Micron is actually 644572 which is splitted to 2 rep"), so
+     each row becomes one order at the share it states, credited wholly to
+     the rep whose row it is. The sharing is in the value, and this function
+     needs to know nothing about it.
+
+     A build between 13 and 22-Oct-26 read those paired rows as one bill
+     counted twice and merged them at half credit each. It was wrong - the
+     paired values are one rupee apart and sum to odd numbers, which is a
+     halved odd bill, not a duplicate - and it understated FY27 by Rs 89
+     lakh. Nothing here changed either way: this pays on the share. */
   ordersSnap.forEach(d => {
     const o = d.data();
     const split = o.creditSplit

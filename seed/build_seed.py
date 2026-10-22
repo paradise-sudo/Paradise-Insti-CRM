@@ -320,31 +320,22 @@ report['orders_split'] = 0
 report['orders_split_bills'] = 0
 report['orders_rekeyed'] = 0
 
-# ------------------------------------------------- one invoice, one order
-# Compass CPU Hyd is worked by Bashab and Sameer together, and both log the
-# closure - same date, same value, same invoice number, same store, same
-# "Business Closed" remark. The importer gave each row its own order, so
-# Rs 88.6 lakh of FY27 - 21.6% of it - was the same bills counted twice, and
-# the CRM read 410.6L where the P&L reads 322.1L.
+# ------------------------------------------- the same bill entered twice
+# Compass CPU Hyd and Micron are worked by two reps, and the DCR carries ONE
+# ROW PER REP ALREADY CARRYING THAT REP'S SHARE. Ayush, 22-Oct-26: "Micron is
+# actually 644572 which is splitted to 2 rep". Two rows of 3,22,286 are the
+# two halves of that bill, not the bill twice - so they are LEFT ALONE and
+# their values add up to what was billed.
 #
-# The fix cannot be "collapse rows matching on account, date and value".
-# That was tried once and lost Rs 79.8 lakh, because a caterer really does
-# deliver the same order twice in a day; seq() exists for exactly that. So
-# two rows are the same order only when:
+# This was read backwards for eight days and FY27 was understated by Rs 89.09
+# lakh. The evidence was there the whole time: six pairs differ by exactly one
+# rupee and every one sums to an ODD number - 26,125 + 26,124 = 52,249. That
+# is an odd bill halved, and a duplicate would have been identical.
 #
-#   * they carry the same non-empty invoice number AND the same value - one
-#     bill is one order whoever typed it and on whatever day. The value has
-#     to match too, because "CIFSPL270715" is a weekly Compass reference
-#     rather than a bill number and carries three different amounts; and
-#   * or they match on account, order date and value AND were logged by two
-#     DIFFERENT reps. Same rep, same day, same value, no invoice is the
-#     genuine repeat delivery, and it stays two orders.
-#
-# 46 pairs collapse. 45 are two reps and get half the credit each - set by
-# Ayush, 13-Oct-26 - which is what creditSplit is for. The 46th is one rep
-# who entered a 6 May popup again on the 7th, invoice and all, and takes the
-# whole credit. Activities are NOT collapsed: both reps did log the call,
-# and the entry log should still show that they did.
+# What IS a duplicate: the same rep entering one invoice twice. Sameer keyed
+# the 6 May Accenture popup again on the 7th, invoice, store and remarks
+# intact. One person cannot share a bill with themselves, so of those rows one
+# survives at its full value.
 _dupe_rows = [r for r in rows if r.get('source') == 'fy27' and r['actual'] > 0]
 _par = list(range(len(_dupe_rows)))
 
@@ -374,10 +365,9 @@ for _g in _by_value.values():
     for _a in range(len(_g)):
         for _b in range(_a + 1, len(_g)):
             ra, rb = _dupe_rows[_g[_a]], _dupe_rows[_g[_b]]
-            same_inv = ra['invoiceNo'] and ra['invoiceNo'] == rb['invoiceNo']
-            same_ord = (norm(ra['account']) == norm(rb['account'])
-                        and _oday(ra) == _oday(rb) and ra['rep'] != rb['rep'])
-            if same_inv or same_ord:
+            # ONE rep, ONE invoice number, twice. Nothing else.
+            if (ra['rep'] and ra['rep'] == rb['rep']
+                    and ra['invoiceNo'] and ra['invoiceNo'] == rb['invoiceNo']):
                 _union(_g[_a], _g[_b])
 
 _members = collections.defaultdict(list)
@@ -387,51 +377,10 @@ for _n in range(len(_dupe_rows)):
 for _lead, _ms in _members.items():
     if len(_ms) < 2:
         continue
-    # The earliest row leads, so the order keeps the date it was really placed
-    # rather than the date somebody re-keyed it.
     _ms.sort(key=lambda n: (_oday(_dupe_rows[n]), _dupe_rows[n]['date']))
-    _reps = []
-    for _n in _ms:
-        _rp = _dupe_rows[_n]['rep']
-        if _rp and _rp not in _reps:
-            _reps.append(_rp)
-    # Both rows stay. Set by Ayush, 14-Oct-26: a rep who worked the deal and
-    # logged it should still see their own order, so one bill logged by two
-    # reps becomes two orders of half each, which add back to the bill.
-    # Nothing disappears from anybody's screen and the company counts it once.
-    _gid = sid('spl', 'g%d_%s_%s' % (_lead, _oday(_dupe_rows[_ms[0]]),
-                                     round(_dupe_rows[_ms[0]]['actual'], 2)))
-    _full = round(_dupe_rows[_ms[0]]['actual'], 2)
-
-    # One rep cannot share a bill with themselves. Where every row in the
-    # group is the same person it is a re-key, not a split - Sameer entered
-    # the 6 May Accenture popup again on the 7th, invoice and remarks intact -
-    # so one order survives at the full value and the rest are dropped.
-    if len(_reps) < 2:
-        for _n in _ms[1:]:
-            _dupe_rows[_n]['skipOrder'] = True
-            report['orders_rekeyed'] += 1
-        continue
-
-    _n_rows = len(_ms)
-    _each = round(_full / _n_rows, 2)
-    for _idx, _n in enumerate(_ms):
-        _r = _dupe_rows[_n]
-        # The first row absorbs the rounding, so the parts total the bill to
-        # the paisa rather than leaving a stray rupee off the invoice.
-        _r['splitValue'] = (round(_full - _each * (_n_rows - 1), 2)
-                            if _idx == 0 else _each)
-        _r['splitFull'] = _full
-        _r['splitWays'] = _n_rows
-        _r['splitWith'] = [p for p in _reps if p != _r['rep']]
-        # An explicit group id, because the halves cannot always be found by
-        # matching fields: 15 of these pairs are one weekly delivery filed
-        # under two different account names - "7 Eleven Global Solution
-        # Center" and "Delivery at SEBLR Banglore (Compass)" - so account and
-        # date do not identify the bill.
-        _r['splitGroup'] = _gid
-        report['orders_split'] += 1
-    report['orders_split_bills'] += 1
+    for _n in _ms[1:]:
+        _dupe_rows[_n]['skipOrder'] = True
+        report['orders_rekeyed'] += 1
 
 
 # ---------------------------------------------------------------- users
@@ -556,12 +505,10 @@ for key, rs in by_account.items():
             loggedAt=x['date'].isoformat()))
         if x['actual'] > 0 and not x.get('skipOrder'):
             od = x['orderDate'] or x['date']
-            # One bill logged by two reps is two orders of half each. The
-            # order belongs wholly to the rep who logged it - no creditSplit
-            # map - because the sharing is already in the value.
-            _shared = 'splitValue' in x
-            _val = round(x['splitValue'] if _shared else x['actual'], 2)
-            _ways = x.get('splitWays', 1)
+            # The row's value as the DCR states it. Where two reps worked one
+            # bill the DCR already carries each rep's share on their own row,
+            # so the rows add up to the bill and nothing here divides.
+            _val = round(x['actual'], 2)
             orders.append(dict(
                 id=sid('ord', seq(key + od.isoformat() + str(x['actual']))),
                 accountId=aid, opportunityId=oid,
@@ -572,9 +519,7 @@ for key, rs in by_account.items():
                 # keeps only the latest row's figure, which meant an account
                 # ordering eight times in a month had its month of billings
                 # compared against one row's forecast.
-                # halved too, or forecast-against-outturn compares one
-                # rep's half against the whole deal's forecast
-                expectedValue=round(x['expected'] / _ways, 2),
+                expectedValue=round(x['expected'], 2),
                 businessType=x.get('businessType', ''),
                 store=x['store'], channel='',
                 invoiceNumber=x['invoiceNo'],
@@ -587,12 +532,7 @@ for key, rs in by_account.items():
                 paymentStatus=x['hoStatus'] or '',
                 paymentReceivedAt=None, financeApprovedAt=None,
                 aggregator=x['aggregator'] or None,
-                commissionPct=0.15 if x['aggregator'] in AGGS else 0,
-                **({'invoiceFull': x['splitFull'],
-                    'splitGroup': x['splitGroup'],
-                    'splitWays': _ways,
-                    'splitWith': [uid(p) for p in x['splitWith']]}
-                   if _shared else {})))
+                commissionPct=0.15 if x['aggregator'] in AGGS else 0))
 
 # ---------------------------------------------------------------- targets
 # Three blocks per sheet: Overall, New (client|order), Old (client|order).

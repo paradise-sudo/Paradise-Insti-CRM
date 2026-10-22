@@ -9,9 +9,11 @@
  *
  * FY27 orders reached the database by three routes and the routes disagree:
  *
- *   - the import, which until 13-Oct-26 made one order per DCR ROW, so an
- *     invoice two reps both logged became two orders - Rs 89.7 lakh of FY27
- *     counted twice
+ *   - the import, which between 13 and 22-Oct-26 MERGED the two rows of a
+ *     bill worked by two reps, on the mistaken belief that they were the
+ *     bill counted twice. They are not: each row holds that rep's share, so
+ *     the merge halved genuine revenue and understated FY27 by Rs 89 lakh.
+ *     The importer emits one order per DCR row again.
  *   - the app, where the team has started closing orders directly
  *   - the app again, as test rows, since removed
  *
@@ -23,8 +25,9 @@
  * different values, different channel.
  *
  * So FY27 is cleared and rebuilt from the DCR, which today still holds
- * everything. The importer now merges an invoice logged by two reps into one
- * order carrying a 50/50 credit split, so what comes back is right.
+ * everything. One order per DCR row, at the value that row states, credited
+ * to the rep whose row it is. Only a row the SAME rep keyed twice under the
+ * same invoice is merged, which is a re-key rather than a share.
  *
  * WHAT IT TOUCHES
  *
