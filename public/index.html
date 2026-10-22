@@ -916,7 +916,14 @@ $('#signout').onclick = () => signOut(auth).then(()=>location.reload());
 fetch('build.json', { cache:'no-store' })
   .then(r => r.ok ? r.json() : null)
   .then(b => { const el = $('#buildStamp');
-    if (el && b) el.textContent = 'Build ' + b.commit + ' \u00b7 ' + b.at; })
+    if (!el || !b) return;
+    /* Deployed first, because the question this answers is "am I on the
+       build that just went out". The commit and the date the code last
+       changed come second: a deploy of code written a week ago is current,
+       and showing only the commit date made that look stale. */
+    el.innerHTML = (b.deployed ? 'Deployed ' + esc(b.deployed) + '<br>' : '')
+      + 'Build ' + esc(b.commit) + (b.at ? ' \u00b7 code of ' + esc(b.at) : '');
+    if (b.subject) el.title = b.subject; })
   .catch(() => {});
 
 onAuthStateChanged(auth, async u => {

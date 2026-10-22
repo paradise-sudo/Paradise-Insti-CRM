@@ -36,9 +36,14 @@ git pull --ff-only
 
 # A build stamp the app can show, so "am I on the new version" is answerable
 # at a glance instead of by guessing. Gitignored, written fresh each deploy.
-printf '{"commit":"%s","at":"%s","subject":"%s"}\n' \
+# Two dates, because they answer two different questions and only one of
+# them is "did my deploy land". The stamp showed the COMMIT date, so a deploy
+# of code last changed eight days ago read "14 Oct" and looked stale when it
+# was current. Deployed is wall-clock IST at the moment of the deploy.
+printf '{"commit":"%s","at":"%s","deployed":"%s","subject":"%s"}\n' \
   "$(git rev-parse --short HEAD)" \
   "$(git log -1 --format=%cd --date=format:'%d %b %H:%M')" \
+  "$(TZ=Asia/Kolkata date '+%d %b %H:%M')" \
   "$(git log -1 --format=%s | sed 's/"/\\"/g')" > public/build.json
 
 step "2/5  Deploying hosting, functions and rules"
