@@ -578,7 +578,13 @@ for key, rs in by_account.items():
                 businessType=x.get('businessType', ''),
                 store=x['store'], channel='',
                 invoiceNumber=x['invoiceNo'],
-                paymentStatus=x['hoStatus'] or 'Pending',
+                # A blank "Received at HO" means nobody filled the column
+                # in, not that the money is outstanding. Defaulting it to
+                # Pending invented Rs 4.04 lakh of debt across FY27 - about a
+                # quarter of the pending figure - and the screen had no way
+                # to tell the invented part from the real part. Left empty,
+                # and the dashboard counts it as not recorded.
+                paymentStatus=x['hoStatus'] or '',
                 paymentReceivedAt=None, financeApprovedAt=None,
                 aggregator=x['aggregator'] or None,
                 commissionPct=0.15 if x['aggregator'] in AGGS else 0,

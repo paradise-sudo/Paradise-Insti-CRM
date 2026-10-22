@@ -2311,12 +2311,19 @@ function viewDash() {
      the screen rather than showing a number that is not true. */
   const expected = ord.reduce((n, o) => n + (o.expectedValue || 0), 0);
 
-  const hoRev  = ord.filter(o => /\bHO\b/i.test(o.paymentStatus || ''))
-                    .reduce((n, o) => n + (o.value || 0), 0);
-  const pendRev = ord.filter(o => /pending/i.test(o.paymentStatus || ''))
-                    .reduce((n, o) => n + (o.value || 0), 0);
-  const aggRev = ord.filter(o => o.aggregator)
-                    .reduce((n, o) => n + (o.value || 0), 0);
+  /* Collection, as four parts that add back to what was billed. The card
+     used to be headed "Money still to come in" with At HO as its biggest
+     bar - and At HO is money that has ALREADY come in, so the heading said
+     the opposite of the number underneath it. Aggregator revenue was the
+     third bar, which is a slice of the same money rather than a fourth
+     part of it. */
+  const sumv = a => a.reduce((n, o) => n + (o.value || 0), 0);
+  const hoRev    = sumv(ord.filter(o => /\bHO\b/i.test(o.paymentStatus || '')));
+  const storeRev = sumv(ord.filter(o => /store/i.test(o.paymentStatus || '')));
+  const pendRev  = sumv(ord.filter(o => /pending/i.test(o.paymentStatus || '')));
+  const noPayRev = sumv(ord.filter(o => !String(o.paymentStatus || '').trim()));
+  const noPayN   = ord.filter(o => !String(o.paymentStatus || '').trim()).length;
+  const aggRev   = sumv(ord.filter(o => o.aggregator));
 
   // new vs old, by the account's class at load time
   let newRev = 0, oldRev = 0;
@@ -2647,12 +2654,24 @@ function viewDash() {
           ${(actIn.length/Math.max(1,touched)).toFixed(1)} each.</p>` : ''}
       </div>
       <div class="card" style="margin:0">
-        <h2>Money still to come in</h2>
-        ${bars([['At HO', hoRev, inr(hoRev)],
-                ['Pending', pendRev, inr(pendRev)],
-                ['Through aggregators', aggRev, inr(aggRev)]])}
-        <p class="hint" style="margin-top:10px">Pending is billed revenue with
-          no payment recorded against it yet.</p>
+        <h2>Has the money come in?</h2>
+        ${dtable(['', 'Amount', 'Share'],
+          [['Received at HO', hoRev], ['Received at store', storeRev],
+           ['Still to come', pendRev]]
+            .concat(noPayRev ? [['Not recorded', noPayRev]] : [])
+            .map(([k, v]) => ({ c:[
+              k === 'Still to come'
+                ? `<b style="color:var(--warn)">${esc(k)}</b>` : esc(k),
+              inr(v), net ? (v / net * 100).toFixed(0) + '%' : '\u2014'] })),
+          ['Billed', inr(hoRev + storeRev + pendRev + noPayRev),
+           net ? '100%' : '\u2014'])}
+        <p class="hint" style="margin-top:10px">The four add up to Net sales.
+          <b>Still to come</b> is an order the team marked Pending${
+          noPayN ? `; <b>Not recorded</b> is ${noPayN} order${noPayN===1?'':'s'}
+          where nobody filled the payment column in — not money owed, but not
+          money in either` : ''}.${aggRev ? ` Of everything billed,
+          <b>${inr(aggRev)}</b> came through an aggregator — that cuts across
+          all four rows rather than being one of them.` : ''}</p>
       </div>
     </div>
 
