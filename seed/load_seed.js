@@ -22,13 +22,11 @@
  * "Cannot read properties of undefined (reading 'cert')". The modular imports
  * have worked since v10 and still do.
  */
-const { initializeApp, cert, applicationDefault } = require('firebase-admin/app');
-const { getFirestore, FieldValue } = require('firebase-admin/firestore');
+const { db, projectId, FieldValue, haveKey, KEY } = require('./fbadmin');
 const fs = require('fs');
 const path = require('path');
 
 const OUT = path.join(__dirname, 'out');
-const KEY = path.join(__dirname, 'serviceAccountKey.json');
 
 const args = process.argv.slice(2);
 const DRY = args.includes('--dry');
@@ -41,43 +39,10 @@ const ONLY = arg('only') ? arg('only').split(',') : null;
 const ORDER = ['users', 'accounts', 'contacts', 'opportunities',
                'activities', 'orders', 'stageHistory', 'targets'];
 
-/* ---- which project are we writing to? ------------------------------------
- * Getting this wrong writes 11,000 documents into the wrong database, so it
- * is resolved explicitly and printed before anything is written.            */
-function resolveProject() {
-  if (arg('project')) return arg('project');
-  try {
-    const rc = JSON.parse(fs.readFileSync(
-      path.join(__dirname, '..', '.firebaserc'), 'utf8'));
-    const p = rc.projects && (rc.projects.default || Object.values(rc.projects)[0]);
-    if (p) return p;
-  } catch (e) { /* no .firebaserc, fall through */ }
-  return process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT || null;
-}
 
-const projectId = resolveProject();
-const haveKey = fs.existsSync(KEY);
-
-if (!haveKey && !projectId) {
-  console.error('Cannot tell which project to write to.');
-  console.error('Run it from inside the repo so .firebaserc is found, or pass');
-  console.error('  node load_seed.js --project=paradise-insti-crm');
-  process.exit(1);
-}
-
-let db;
-try {
-  initializeApp(haveKey
-    ? { credential: cert(require(KEY)), projectId }
-    : { credential: applicationDefault(), projectId });
-  db = getFirestore();
-} catch (e) {
-  console.error('Could not connect: ' + e.message);
-  console.error('');
-  console.error('If that is a credentials problem and you are in Cloud Shell,');
-  console.error('run:  gcloud auth application-default login');
-  process.exit(1);
-}
+/* The project, the credentials and the missing-dependency case are all
+   resolved by ./fbadmin, which stops with the command that fixes each one
+   instead of a Node stack trace. */
 
 console.log('project     : ' + projectId);
 console.log('credentials : ' + (haveKey ? 'serviceAccountKey.json'

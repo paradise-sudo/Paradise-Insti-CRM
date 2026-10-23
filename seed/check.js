@@ -1,12 +1,5 @@
-const {initializeApp,applicationDefault,cert}=require('firebase-admin/app');
-const {getFirestore}=require('firebase-admin/firestore');
+const { db, projectId: pid } = require('./fbadmin');
 const fs=require('fs'),path=require('path');
-const KEY=path.join(__dirname,'serviceAccountKey.json');
-let pid;try{pid=JSON.parse(fs.readFileSync(path.join(__dirname,'..','.firebaserc'),'utf8')).projects.default;}catch(e){}
-pid=pid||process.env.GOOGLE_CLOUD_PROJECT;
-initializeApp(fs.existsSync(KEY)?{credential:cert(require(KEY)),projectId:pid}
-                                :{credential:applicationDefault(),projectId:pid});
-const db=getFirestore();
 (async()=>{
   const inr=n=>'Rs '+Math.round(n).toLocaleString('en-IN');
   const o=await db.collection('orders').get();

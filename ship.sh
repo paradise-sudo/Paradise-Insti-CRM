@@ -50,30 +50,18 @@ step "2/5  Deploying hosting, functions and rules"
 firebase deploy --only hosting,functions,firestore:rules --force
 
 cd seed
-node -e "require.resolve('firebase-admin')" 2>/dev/null \
-  || { step "Installing firebase-admin"; npm install firebase-admin --no-fund --no-audit; }
+# seed/package.json declares firebase-admin. Until 23-Oct-26 it did not exist,
+# so this folder was one `npm install firebase-admin` away from working and
+# every script in it died on require - which is how three DCRs were handed
+# over in October and none of them ever reached the database.
+npm install --no-fund --no-audit --silent >/dev/null 2>&1 || true
 
-# A deploy that leaves FY27 empty looks exactly like a deploy that worked,
-# until somebody opens the dashboard and reads zero. ship.sh does not load the
-# seed - that is build_seed.py and load_seed.js, run by hand after a reset -
-# so it checks and says so rather than finishing with a tick.
-step "2.5/5  Is there any FY27 data?"
-node -e "
-const {initializeApp,applicationDefault,cert}=require('firebase-admin/app');
-const {getFirestore}=require('firebase-admin/firestore');
-const fs=require('fs');const KEY='./serviceAccountKey.json';
-let pid;try{pid=JSON.parse(fs.readFileSync('../.firebaserc','utf8')).projects.default;}catch(e){}
-initializeApp(fs.existsSync(KEY)?{credential:cert(require(KEY)),projectId:pid}
-                                :{credential:applicationDefault(),projectId:pid});
-getFirestore().collection('orders').get().then(s=>{
-  let n=0,v=0;s.forEach(d=>{const o=d.data();
-    if(String(o.orderDate||'').slice(0,10)>='2026-04-01'){n++;v+=o.value||0;}});
-  if(n) console.log('   FY27: '+n+' orders, Rs '+Math.round(v).toLocaleString('en-IN'));
-  else  console.log('\033[33m   FY27 IS EMPTY - the dashboard will read zero.\n'+
-                    '   Load it:  cd seed && python3 build_seed.py && node load_seed.js\033[0m');
-  process.exit(0);
-}).catch(e=>{console.log('   (could not check: '+e.message+')');process.exit(0);});
-" || true
+# A deploy that leaves the CURRENT MONTH empty looks exactly like a deploy
+# that worked. ship.sh does not load the seed - that is build_seed.py and
+# load_seed.js, run by hand - so it reports what the database actually holds
+# and how old it is, rather than finishing with a tick.
+step "2.5/5  Is the data in the database current?"
+node freshness.js || true
 
 step "3/5  Stale targets and users"
 node cleanup.js $APPLY

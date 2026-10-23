@@ -48,12 +48,9 @@
  * Between the delete and the load the dashboard reads zero for FY27. That is
  * a real window, so do it when nobody is presenting from it.
  */
-const { initializeApp, cert, applicationDefault } = require('firebase-admin/app');
-const { getFirestore } = require('firebase-admin/firestore');
+const { db, projectId } = require('./fbadmin');
 const fs = require('fs');
 const path = require('path');
-
-const KEY = path.join(__dirname, 'serviceAccountKey.json');
 const args = process.argv.slice(2);
 const APPLY = args.includes('--apply');
 const ACTS = args.includes('--acts');
@@ -63,19 +60,6 @@ const arg = n => {
 };
 const FY = arg('from') || '2026-04-01';
 
-let projectId = arg('project');
-if (!projectId) {
-  try {
-    const rc = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '.firebaserc'), 'utf8'));
-    projectId = rc.projects && (rc.projects.default || Object.values(rc.projects)[0]);
-  } catch (e) { /* fall through */ }
-}
-projectId = projectId || process.env.GOOGLE_CLOUD_PROJECT;
-
-initializeApp(fs.existsSync(KEY)
-  ? { credential: cert(require(KEY)), projectId }
-  : { credential: applicationDefault(), projectId });
-const db = getFirestore();
 
 const inr = n => 'Rs ' + Math.round(n).toLocaleString('en-IN');
 const day = v => String(v || '').slice(0, 10);

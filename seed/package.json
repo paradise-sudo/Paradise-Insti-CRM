@@ -1,0 +1,14 @@
+{
+  "name": "paradise-insti-crm-seed",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Build and load scripts for the Paradise institutional sales CRM. Every .js file here talks to Firestore through firebase-admin, so the dependency is declared HERE rather than left to be installed by hand. It was missing until 23-Oct-26, which made every script in this folder fail with MODULE_NOT_FOUND on a fresh clone - including load_seed.js, the one that puts the DCR into the database.",
+  "scripts": {
+    "check": "node check.js",
+    "load": "node load_seed.js",
+    "reset": "node resetfy27.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.1.0"
+  }
+}

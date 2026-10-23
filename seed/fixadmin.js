@@ -38,12 +38,9 @@
  *
  * Safe to run twice: a repaired order no longer matches.
  */
-const { initializeApp, cert, applicationDefault } = require('firebase-admin/app');
-const { getFirestore } = require('firebase-admin/firestore');
+const { db, projectId } = require('./fbadmin');
 const fs = require('fs');
 const path = require('path');
-
-const KEY = path.join(__dirname, 'serviceAccountKey.json');
 const args = process.argv.slice(2);
 const APPLY = args.includes('--apply');
 const arg = n => {
@@ -51,19 +48,6 @@ const arg = n => {
   return a ? a.split('=').slice(1).join('=') : null;
 };
 
-let projectId = arg('project');
-if (!projectId) {
-  try {
-    const rc = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '.firebaserc'), 'utf8'));
-    projectId = rc.projects && (rc.projects.default || Object.values(rc.projects)[0]);
-  } catch (e) { /* fall through */ }
-}
-projectId = projectId || process.env.GOOGLE_CLOUD_PROJECT;
-
-initializeApp(fs.existsSync(KEY)
-  ? { credential: cert(require(KEY)), projectId }
-  : { credential: applicationDefault(), projectId });
-const db = getFirestore();
 
 const inr = n => 'Rs ' + Math.round(n).toLocaleString('en-IN');
 
