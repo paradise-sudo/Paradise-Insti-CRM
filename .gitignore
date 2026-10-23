@@ -1,6 +1,13 @@
 node_modules/
 seed/serviceAccountKey.json
-seed/source/*.xlsx
+# seed/source/*.xlsx was ignored until 23-Oct-26, and that cost a week and a
+# half. build_seed.py reads those workbooks, so with them untracked every
+# machine built from whatever copy it happened to hold - and nothing in the
+# output said which. Ayush's DCR was three weeks behind mine; his build wrote
+# Rs 3.99 Cr to Firestore, I was quoting Rs 4.45 Cr from the same script, and
+# the dashboard read zero for October while both of us believed the data was
+# loaded. The input to a build belongs in the repo with the build.
+# Derived copies stay out: build_seed.py regenerates them.
 seed/source/*.clean.xlsx
 seed/out/
 .firebase/

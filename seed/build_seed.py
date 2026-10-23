@@ -19,10 +19,45 @@ SRC  = os.path.join(HERE, 'source')
 OUT  = os.path.join(HERE, 'out')
 os.makedirs(OUT, exist_ok=True)
 
-# Put the three workbooks in seed/source/ with these names.
+# Put the three workbooks in seed/source/ with these names. They are tracked
+# in git as of 23-Oct-26 - see the note in .gitignore for why.
 F_CUR    = 'DCR_Insti-Sales_FY-27.xlsx'
 F_BASHAB = 'New_Analysis_Sheet_-_Bashab_Fin.xlsx'
 F_SAMEER = 'New_Analysis_Sheet-Sameer.xlsx'
+
+
+def report_sources():
+    """Say WHICH workbooks this build read, and how old they are.
+
+    A stale source is the one failure mode that leaves no trace: the script
+    runs clean, the totals look plausible, and the only way to notice is to
+    compare against a number from somewhere else. Through October 2026 two
+    machines built from DCRs three weeks apart and neither build said so -
+    Rs 46 lakh and the whole of October went missing in the gap. Printing the
+    date and a short hash makes the input visible in the same breath as the
+    output, so two builds that disagree can be told apart at a glance.
+    """
+    print('--- source workbooks ---')
+    today = dt.date.today()
+    for f in (F_CUR, F_BASHAB, F_SAMEER):
+        p = os.path.join(SRC, f)
+        if not os.path.exists(p):
+            print('%-38s MISSING' % f[:38])
+            continue
+        st = os.stat(p)
+        when = dt.date.fromtimestamp(st.st_mtime)
+        h = hashlib.sha1(open(p, 'rb').read()).hexdigest()[:8]
+        age = (today - when).days
+        flag = ''
+        # The history workbooks are fixed; only the DCR should be moving.
+        if f == F_CUR and age > 7:
+            flag = '   <-- %d DAYS OLD. Is this the current DCR?' % age
+        print('%-38s %s  %s  %6.0f KB%s'
+              % (f[:38], when.isoformat(), h, st.st_size / 1024.0, flag))
+    print('')
+
+
+report_sources()
 
 REPS  = ['Sameer', 'Bashab', 'Vishwanath', 'Pradeep', 'Anushikha']
 # Real addresses, confirmed by Ayush 30-Sep-26. Lower case is not cosmetic:
