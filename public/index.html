@@ -2348,6 +2348,28 @@ function viewDash() {
   const lost = Object.keys(lyBy).filter(id => !tyBy[id]);
   const won = Object.keys(tyBy).filter(id => !lyBy[id]);
 
+  /* By account, for the range on screen. Every other breakdown on this
+     screen rolls accounts up into something - region, type, rep - and until
+     now there was no way to ask the plainest question of all: who bought,
+     and how much. Ayush, 30-Oct-26, asking where to see last year account
+     wise. tyBy and lyBy above already hold this window and the same window a
+     year back, keyed by account, so the year-on-year column is free.
+
+     Rows are accounts that billed in THIS range. An account that bought last
+     year and has gone quiet has no row here by construction - it would be a
+     row of zeroes - so the gap between these rows' last-year column and the
+     vs-last-year tile is stated under the table and pointed at Winback,
+     which is the screen built for exactly those clients. */
+  const accN = {};
+  ord.forEach(o => accN[o.accountId] = (accN[o.accountId] || 0) + 1);
+  const accRows = Object.keys(tyBy)
+    .map(id => ({ id, name: (S.byId[id] || {}).name || '—',
+                  v: tyBy[id], n: accN[id] || 0, ly: lyBy[id] || 0 }))
+    .sort((a, b) => b.v - a.v);
+  const accLy   = accRows.reduce((n, r) => n + r.ly, 0);
+  const accNew  = accRows.filter(r => !r.ly).length;
+  const quietLy = lyNet - accLy;
+
   const pct = x => x == null ? '—' : (x >= 0 ? '+' : '') + (x * 100).toFixed(1) + '%';
   const tone = a => a >= 1 ? '--ok' : a >= 0.8 ? '--warn' : '--bad';
 
@@ -2762,7 +2784,76 @@ function viewDash() {
       ${unowned.length ? `<p class="hint" style="margin-top:10px">
         <b>${inr(unownedVal)}</b> across ${unowned.length} order${unowned.length>1?'s':''}
         has no rep attached, so it counts toward nobody's target.</p>` : ''}
+    </div>
+
+    <div class="card">
+      <h2>By account</h2>
+      <div class="row" style="margin-bottom:10px;gap:6px">
+        <button class="chip accn${S.accShow ? '' : ' on'}" data-n="0">Top 15</button>
+        <button class="chip accn${S.accShow ? ' on' : ''}" data-n="1">All
+          ${accRows.length}</button>
+        <input id="accQ" class="fld" placeholder="Find an account"
+          style="margin:0;flex:1;min-width:130px" value="${esc(S.accQ || '')}">
+      </div>
+      <div id="accBody"></div>
+      <p class="hint" style="margin-top:10px">Who billed in this range, biggest
+        first. <b>Last year</b> is the same calendar window a year back, so a
+        part-month range compares like with like.${quietLy > 999 ? ` Clients who
+        bought in that window and have <b>not</b> bought in this one have no row
+        here — that is <b>${inr(quietLy)}</b> of last year's
+        ${inr(lyNet)}, and Winback is the screen for them.` : ''}</p>
+      ${accNew > accRows.length / 2 ? `<p class="hint" style="margin-top:6px">
+        <b>${accNew} of ${accRows.length} read as new</b>, which is more than it
+        looks. <b>New</b> means no order against <i>this account record</i> in
+        that window, so a client the team re-entered under a different name
+        counts as new and its history stays on the old record — MSN Labs
+        and MSN, or a Compass site logged separately from the group. Worth
+        trusting the per-row growth only where both columns are filled, and the
+        totals only after the duplicate accounts are merged.</p>` : ''}
+      <p class="hint" style="margin-top:6px">The Total row carries no growth on
+        purpose: it would divide ${accRows.length} accounts' revenue this year
+        by the ${accRows.length - accNew} that also billed last year. The
+        like-for-like figure is <b>SSSG</b>, above.</p>
     </div>`;
+
+  // By account: top 15 or all, with a filter
+  const drawAcc = () => {
+    const body = $('#accBody');
+    if (!body) return;
+    const q = norm(S.accQ || '');
+    const hits = q ? accRows.filter(r => norm(r.name).includes(q)) : accRows;
+    const show = (S.accShow || q) ? hits : hits.slice(0, 15);
+    body.innerHTML = hits.length ? dtable(
+      ['Account', 'Orders', 'Value', 'Share', 'Last year', 'Growth'],
+      show.map(r => ({ c: [
+        esc(r.name), String(r.n), inr(r.v),
+        (net ? (r.v / net * 100).toFixed(1) : '0.0') + '%',
+        r.ly ? inr(r.ly) : '—',
+        r.ly ? `<span style="color:var(${r.v >= r.ly ? '--ok' : '--bad'})">${
+                 pct(r.v / r.ly - 1)}</span>`
+             : '<span class="muted">new</span>'] })),
+      /* No growth figure on the Total row. It would divide every account's
+         revenue this year by the last-year revenue of only those accounts
+         that also billed last year - 173 against 22, which came out at
+         +676% and read like a finding. The like-for-like number already
+         exists on this screen and is called SSSG. */
+      q ? null : ['Total', String(ord.length), inr(net), '100%',
+                  accLy ? inr(accLy) : '—', '—'])
+      + (!S.accShow && !q && hits.length > 15
+          ? `<p class="hint" style="margin-top:8px">Showing the top 15 of
+             ${hits.length}. The rest come to ${inr(
+               hits.slice(15).reduce((n, r) => n + r.v, 0))}.</p>` : '')
+      : `<div class="empty">No account matches “${esc(S.accQ || '')}”
+         in this range.</div>`;
+  };
+  drawAcc();
+  $('#view').querySelectorAll('.accn').forEach(b => b.onclick = () => {
+    $('#view').querySelectorAll('.accn').forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+    S.accShow = b.dataset.n === '1';
+    drawAcc();
+  });
+  if ($('#accQ')) $('#accQ').oninput = e => { S.accQ = e.target.value; drawAcc(); };
 
   // SSSG toggle
   const drawSssg = (basis) => {
