@@ -9,7 +9,17 @@
  *   - no broadcast lists, ever
  *   - every send is written to notifyLog with its recipient list
  */
-const functions = require('firebase-functions');
+/* The v1 API, explicitly. firebase-functions 6.0.0 stopped exporting it from
+   the package root, so `require('firebase-functions').region(...)` became
+   undefined - every function here is v1 (region/runWith/https.onCall), and
+   the root import would fail at load with no useful message. Importing /v1
+   by name keeps these eight functions exactly as they are while the package
+   moves on; migrating them to v2 is a separate job with its own testing.
+
+   Why the version moved at all: Node 20 was decommissioned on 30-Oct-26 and
+   Cloud Functions refused the deploy outright. The runtime is now 22, which
+   needs a firebase-functions new enough to know about it. */
+const functions = require('firebase-functions/v1');
 const { defineSecret } = require('firebase-functions/params');
 const admin = require('firebase-admin');
 const nodemailer = require('nodemailer');
